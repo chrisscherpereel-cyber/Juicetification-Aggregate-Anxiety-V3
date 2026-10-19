@@ -30,7 +30,7 @@ def param_rows(scn: Scenario) -> List[Tuple[str, str, str]]:
         ("Beginning backorders (orders still owed before January)",
          n0(p.get("beginning_backorders", 0)), "bottles"),
         ("Safety stock policy",
-         f"Keep {n0(p['safety_stock'])} bottles" if scn.maintains_safety else "No safety stock", ""),
+         f"Keep {n0(p['safety_stock'])} bottles" if scn.maintains_safety else "None", ""),
         ("Ending-inventory target (EndTarget)", n0(scn.target), "bottles"),
         ("Workforce policy",
          "Whole workers only" if scn.whole_workers else "Fractional workers allowed", ""),
@@ -76,8 +76,7 @@ def policies(scn: Scenario) -> List[Tuple[str, str, List[str]]]:
         ])
     else:
         inv = ("Safety stock: NONE", [
-            "Your company does NOT keep safety stock, so EndTarget = 0. The SafetyStock figure "
-            "on the Scenario sheet is not used by your plans.",
+            "Your company does NOT keep safety stock, so EndTarget = 0.",
             "Chase plan: use up the beginning inventory, then aim to end every month with 0 "
             "bottles on the shelf.",
             "Level plan: one steady rate, chosen so that December ends with 0 bottles.",
@@ -110,9 +109,11 @@ def policies(scn: Scenario) -> List[Tuple[str, str, List[str]]]:
         ])
     else:
         wk = ("Workforce: fractional workers allowed", [
-            "Your company can staff in fractions of a worker (part-time hours, shared staff): "
-            "think of the Workers column as worker-equivalents.",
-            "Employ exactly the workforce production needs — 10.2 workers is fine. Do not round.",
+            "Your company can staff in fractions of a worker (part-time hours, shared staff), so "
+            "capacity can be added or removed in small increments instead of a whole worker at "
+            "a time. Think of the Workers column as worker-equivalents.",
+            "Employ exactly the workforce production needs — 10.2 workers is fine. Do not round, "
+            "so no capacity sits idle just because of rounding.",
             "Labor, hiring and layoff costs are paid in proportion: half a worker hired costs "
             "half of HireCost.",
             f"You start the year with StartWorkers = {n0(p['starting_workforce'])} workers. "

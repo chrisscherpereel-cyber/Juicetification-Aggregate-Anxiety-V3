@@ -28,7 +28,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 from . import MODEL_VERSION, hints, layout as L, text
 from .engine import Decision, reference_plan
-from .scenario import NAME_KEYS, Scenario
+from .scenario import Scenario
 
 SCHEMA = 2
 APP_ID = "aggregate-anxiety-excel"
@@ -197,7 +197,7 @@ def _scenario_sheet(wb, scn: Scenario):
     for j, h in enumerate(["Given data", "Value", "Excel name", "Unit"]):
         _put(ws, f"{get_column_letter(5 + j)}5", h, font=HEAD_FONT, fill=HEAD_FILL,
              border=True)
-    for i, (nm, key, meaning, unit) in enumerate(NAME_KEYS):
+    for i, (nm, key, meaning, unit) in enumerate(scn.name_keys()):
         r = 6 + i
         fmt = "0%" if key == "overtime_pct" else ("$#,##0.00" if unit.startswith("$")
                                                   else "#,##0")
@@ -207,7 +207,7 @@ def _scenario_sheet(wb, scn: Scenario):
         _put(ws, f"G{r}", nm, font=CODE, border=True)
         _put(ws, f"H{r}", unit, border=True)
         wb.defined_names[nm] = DefinedName(nm, attr_text=f"{L.SHEET_SCENARIO}!$F${r}")
-    r = 6 + len(NAME_KEYS) + 2
+    r = 6 + len(scn.name_keys()) + 2
     _put(ws, f"A{r}", "Planning policies — how your company handles safety stock, backorders "
                       "and workers", font=H2)
     r += 1
@@ -392,7 +392,9 @@ def _meta_sheet(wb, scn: Scenario, name: str, sid: str, game: Optional[str]):
     rows = [("app", APP_ID), ("schema", SCHEMA), ("model_version", MODEL_VERSION),
             ("seed", scn.seed), ("config_hash", scn.config_hash), ("student_id", sid or ""),
             ("student_name", name or ""), ("game", game or ""), ("created_utc", created),
-            ("workbook_id", wid)]
+            ("workbook_id", wid),
+            ("safety_stock_policy", scn.params.get("safety_stock_policy", "none")),
+            ("worker_policy", scn.params.get("worker_policy", "whole"))]
     for i, (k, v) in enumerate(rows, start=1):
         _put(ws, f"A{i}", k)
         _put(ws, f"B{i}", v)

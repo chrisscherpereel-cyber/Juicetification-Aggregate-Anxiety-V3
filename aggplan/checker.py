@@ -45,10 +45,12 @@ MAX_MEMBERS = 2000
 READ_ROWS, READ_COLS = 40, L.LAST_STUDENT_COL + 2
 
 PROBLEM = {"wrong", "typed", "error", "text", "uncalc", "carried"}
+NOT_GRADED = {"decision", "helper"}
 STATUS_LABEL = {
     "ok": "✔ Correct", "typed": "✎ Typed, not calculated", "carried": "↪ Follows an earlier mistake",
     "wrong": "✖ Not right yet", "blank": "○ Empty", "error": "⚠ Excel error",
     "text": "⚠ Text, not a number", "uncalc": "⚠ Not calculated", "decision": "◆ Your decision",
+    "waiting": "… Waiting for your decisions", "helper": "· Not checked (helper column)",
 }
 STATUS_HELP = {
     "typed": "The number is right but it was typed in. Replace it with a formula so Excel "
@@ -167,7 +169,7 @@ class CellCheck:
 
     @property
     def needs_work(self) -> bool:
-        return self.status not in ("ok", "decision")
+        return self.status not in ("ok", "decision", "helper")
 
 
 @dataclass
@@ -202,7 +204,7 @@ class PieceResult:
 
     @property
     def graded(self) -> List[CellCheck]:
-        return [c for c in self.cells if c.status != "decision"]
+        return [c for c in self.cells if c.status not in NOT_GRADED]
 
     @property
     def n_ok(self) -> int:
@@ -524,16 +526,24 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
                             "columns with numbers (0 or more) — then the rest of the sheet can "
                             "be checked.")
     order = sorted(cm.by_concept.items(), key=lambda kv: column_index_from_string(kv[1]))
+    concept_of = {letter: concept for concept, letter in cm.by_concept.items()}
+    all_letters = sorted(cm.headings, key=column_index_from_string)
     for i in range(L.N_MONTHS):
-        for concept, letter in order:
+        for letter in all_letters:
+            concept = concept_of.get(letter)
             ref = f"{letter}{L.month_row(i)}"
             cell = book.cell(sheet, ref)
             col_label = f"{letter} · {cm.headings[letter]}"
             label = f"{cm.headings[letter]}, {scn.months[i]}"
-            if kind == "hybrid" and concept in L.DECISIONS:
-                st, diag = _judge_decision(cell, concept), ""
-            elif pr.key is None:
+            diag = ""
+            if concept is None:                      # helper / unrecognised: shown, not graded
+                res.cells.append(CellCheck(sheet, ref, "helper", label, scn.months[i], col_label,
+                                           "helper", _shown(cell)))
                 continue
+            if kind == "hybrid" and concept in L.DECISIONS:
+                st = _judge_decision(cell, concept)
+            elif pr.key is None:
+                st = "waiting"
             else:
                 st = _judge(cell, float(pr.key[concept].iloc[i]),
                             _local(kind, concept, i, pr.values, pv, scn), _tol(concept), require)
@@ -680,6 +690,15 @@ def check_identity(book: Book, scn: Scenario, expected_sid: Optional[str]) -> Li
     if expected_sid and m.get("student_id", "") != expected_sid:
         out.append(f"This workbook belongs to student ID '{m.get('student_id', '')}', not "
                    f"'{expected_sid}'. Upload your own workbook.")
+    pol = [(k, lab) for k, lab in (("safety_stock_policy", "safety stock"),
+                                     ("worker_policy", "workforce"))
+           if m.get(k) and m.get(k) != str(scn.params.get(k))]
+    if pol and str(m.get("seed", "")) == str(scn.seed):
+        made = ", ".join(f"{lab}: {m[k]}" for k, lab in pol)
+        now = ", ".join(f"{lab}: {scn.params.get(k)}" for k, lab in pol)
+        out.append(f"This workbook was made with different policies ({made}) from the ones now "
+                   f"selected ({now}). Switch back on step 1, or download a new workbook there.")
+        return out
     if str(m.get("seed", "")) != str(scn.seed) or m.get("config_hash") != scn.config_hash:
         out.append("This workbook was made for a different scenario than the one you are signed "
                    "in with (or your instructor changed the assignment). Download your workbook "

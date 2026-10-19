@@ -32,7 +32,7 @@ from manifest import MANIFEST
 from aggplan import checker, hints, layout as L, report, text, workbook
 from aggplan import identity as ident
 from aggplan.recognize import HELPER
-from aggplan.scenario import NAME_KEYS, resolve_scenario
+from aggplan.scenario import resolve_scenario
 
 st.set_page_config(page_title="Aggregate Anxiety — Excel", page_icon="🧃", layout="wide")
 SS = st.session_state
@@ -48,10 +48,15 @@ st.markdown("""
   .aa-grid {overflow-x: auto;}
   .aa-grid table {border-collapse: collapse; font-size: .8rem; margin-bottom: .8rem;}
   .aa-grid th, .aa-grid td {border: 1px solid rgba(128,128,128,.45); padding: .2rem .35rem;}
-  .aa-grid thead th {font-weight: 600; vertical-align: bottom; max-width: 7rem;
-                     white-space: normal; line-height: 1.1;}
+  .aa-grid thead th {font-weight: 600; vertical-align: bottom; max-width: 5.6rem;
+                     white-space: normal; line-height: 1.1; font-size: .72rem;}
+  .aa-grid thead th .ltr {display: block; opacity: .6; font-weight: 400;}
+  .aa-grid.narrow thead th {max-width: none; padding: .3rem .15rem;}
+  .aa-grid.narrow thead th .hd {writing-mode: vertical-rl; transform: rotate(180deg);
+                                white-space: nowrap; display: inline-block;}
+  .aa-grid.narrow td {min-width: 1.45rem; padding: .15rem .1rem;}
   .aa-grid tbody th {text-align: left; font-weight: 600; white-space: nowrap;}
-  .aa-grid td {text-align: center; color: #222; min-width: 2rem; cursor: default;}
+  .aa-grid td {text-align: center; color: #222; min-width: 1.7rem; cursor: default;}
   .aa-hint {border-left: 4px solid #1F3864; padding: .1rem 0 .1rem .8rem; margin: .2rem 0 .9rem 0;}
   .aa-hint .lvl {font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; opacity: .7;}
 </style>""", unsafe_allow_html=True)
@@ -109,9 +114,25 @@ def seed_for(sid: str) -> int:
     return store.derive_seed(GAME, sid, lo=1, hi=10 ** 6)
 
 
+POLICY_KEYS = ("safety_stock_policy", "worker_policy")
+STUDENT_SETS_POLICIES = bool(CFG.get("student_sets_policies", True))
+SS.setdefault("policy", {k: CFG.get(k) for k in POLICY_KEYS})
+
+
+def policy_cfg() -> dict:
+    """Instructor configuration plus the student's two policy switches (when allowed)."""
+    return {**CFG, **SS["policy"]} if STUDENT_SETS_POLICIES else dict(CFG)
+
+
 def scenario():
     stu = SS["student"]
-    return resolve_scenario(CFG, seed_for(stu["sid"])) if stu else None
+    return resolve_scenario(policy_cfg(), seed_for(stu["sid"])) if stu else None
+
+
+def policies_locked() -> bool:
+    """Policies can change only until the first piece is submitted (every piece must be
+    checked against the same rules)."""
+    return not STUDENT_SETS_POLICIES or any(submitted(k) for k in PIECES)
 
 
 def submitted(key: str) -> bool:
@@ -142,7 +163,8 @@ def save_state(step: str) -> None:
     done = sum(submitted(k) for k in PIECES)
     try:
         store.save(GAME, stu["sid"], {"name": stu["name"], "seed": scn.seed,
-                                      "config_hash": scn.config_hash, "pieces": SS["pieces"]},
+                                      "config_hash": scn.config_hash, "pieces": SS["pieces"],
+                                      "policy": SS["policy"]},
                    progress=done / len(PIECES), step=step)
     except Exception:                                                  # noqa: BLE001
         pass
@@ -156,7 +178,9 @@ def restore_state() -> None:
         saved = store.load(GAME, URL_SID) or {}
     except Exception:                                                  # noqa: BLE001
         return
-    scn = resolve_scenario(CFG, seed_for(URL_SID))
+    if STUDENT_SETS_POLICIES and isinstance(saved.get("policy"), dict):
+        SS["policy"].update({k: v for k, v in saved["policy"].items() if k in POLICY_KEYS})
+    scn = resolve_scenario(policy_cfg(), seed_for(URL_SID))
     if saved.get("config_hash") == scn.config_hash and isinstance(saved.get("pieces"), dict):
         SS["student"] = {"name": saved.get("name") or URL_SID, "sid": URL_SID}
         for k in PIECES:
@@ -267,6 +291,42 @@ def show_policies(scn, expanded: bool = False) -> None:
                 st.markdown("\n".join(f"- {text.md(d)}" for d in details))
 
 
+def policy_switches(scn) -> None:
+    """The two policy switches: how safety stock is handled, and whether fractional
+    workers are allowed. Set by the student unless the instructor fixed them."""
+    st.subheader("Choose your planning policies")
+    if not STUDENT_SETS_POLICIES:
+        st.caption("Your instructor has set these policies for the assignment.")
+    elif policies_locked():
+        st.caption("Locked: you've submitted a piece, and every piece must follow the same "
+                   "policies.")
+    else:
+        st.caption("Pick these BEFORE you download your workbook — it is built for them. They "
+                   "lock when you submit your first piece.")
+    disabled = policies_locked()
+    s = f"{scn['safety_stock']:,.0f}"
+    c1, c2 = st.columns(2)
+    with c1:
+        opts = {"none": "No safety stock — end each chase month (and the level plan's December) "
+                        "with 0 bottles",
+                "maintain": f"Keep a safety stock of {s} bottles — the end-of-month target "
+                            "becomes the safety stock"}
+        cur = scn.params.get("safety_stock_policy", "none")
+        pick = st.radio("**Safety stock**", list(opts), format_func=opts.get,
+                        index=list(opts).index(cur), disabled=disabled, key="pol_ss")
+    with c2:
+        opts2 = {"whole": "Whole workers only — round up; extra capacity sits idle but is paid",
+                 "partial": "Allow fractional workers — capacity grows in small increments "
+                            "(part-time hours), no rounding"}
+        cur2 = scn.params.get("worker_policy", "whole")
+        pick2 = st.radio("**Workforce**", list(opts2), format_func=opts2.get,
+                         index=list(opts2).index(cur2), disabled=disabled, key="pol_wk")
+    if not disabled and (pick, pick2) != (cur, cur2):
+        SS["policy"] = {"safety_stock_policy": pick, "worker_policy": pick2}
+        save_state("start")
+        st.rerun()
+
+
 def page_start() -> None:
     header("start")
     if not SS["student"]:
@@ -302,6 +362,8 @@ def page_start() -> None:
     m[2].metric("Peak demand", f"{max(scn.demand):,.0f}")
     m[3].metric("Lowest demand", f"{min(scn.demand):,.0f}")
     st.altair_chart(demand_chart(scn), use_container_width=True)
+    policy_switches(scn)
+    scn = scenario()                         # the switches may have changed it
     st.subheader("Your company's planning policies")
     st.caption("Every plan must follow these. They are also on the Scenario sheet of your workbook.")
     show_policies(scn, expanded=True)
@@ -315,10 +377,19 @@ def page_start() -> None:
             SS["wb_bytes"] = workbook.build_workbook(scn, student_name=stu["name"],
                                                      student_id=stu["sid"], game=GAME)
             SS["wb_for"] = (stu["sid"], scn.config_hash)
+        got = SS.get("downloaded_hash")
+        if got and got != scn.config_hash:
+            st.warning("You changed a policy after downloading. **Download the workbook again** "
+                       "— the old one was built for the other policy and won't be accepted. "
+                       "Copy across any work you already did.")
+
+        def _downloaded(h=scn.config_hash):
+            SS["downloaded_hash"] = h
+
         st.download_button("⬇ Download my Excel workbook", SS["wb_bytes"],
                            file_name=workbook.file_name(stu["name"], stu["sid"]),
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           type="primary", width="stretch")
+                           type="primary", width="stretch", on_click=_downloaded)
         st.caption("Download it once and keep working in the same file for every piece. Works "
                    "in Excel and Google Sheets (File → Download → .xlsx).")
         st.markdown("**You'll submit it in pieces:**")
@@ -330,7 +401,7 @@ def page_start() -> None:
             for t, d in text.EXCEL_TIPS:
                 st.markdown(f"**{t}.** {text.md(d)}")
             st.markdown("**Names for the given data:** "
-                        + ", ".join(f"`{n}`" for n, _, _, _ in NAME_KEYS))
+                        + ", ".join(f"`{n}`" for n, _, _, _ in scn.name_keys()))
     nav_buttons("start", "Start the chase plan →")
 
 
@@ -339,9 +410,10 @@ def page_start() -> None:
 # --------------------------------------------------------------------------- #
 COLORS = {"ok": "#C6EFCE", "typed": "#FFEB9C", "carried": "#E4DFEC", "wrong": "#FFC7CE",
           "blank": "#F2F2F2", "error": "#F8CBAD", "text": "#F8CBAD", "uncalc": "#F8CBAD",
-          "decision": "#DDEBF7"}
+          "decision": "#DDEBF7", "waiting": "#FFFFFF", "helper": "#F7F7F7"}
 SYMBOL = {"ok": "✔", "typed": "✎", "carried": "↪", "wrong": "✖", "blank": "○",
-          "error": "⚠", "text": "⚠", "uncalc": "⚠", "decision": "◆"}
+          "error": "⚠", "text": "⚠", "uncalc": "⚠", "decision": "◆",
+          "waiting": "…", "helper": "·"}
 
 
 def item_name(kind: str, item: str, res: checker.PieceResult) -> str:
@@ -375,13 +447,17 @@ def grid_html(res: checker.PieceResult) -> str:
     g = checker.grid(res)
     if g.empty:
         return ""
-    head = "".join(f"<th>{escape(c)}</th>" for c in g.columns)
+    def _th(c):
+        letter, _, heading = c.partition(" · ")
+        return (f"<th title='{escape(c)}'><span class='ltr'>{escape(letter)}</span>"
+                f"<span class='hd'>{escape(heading)}</span></th>")
+    head = "".join(_th(c) for c in g.columns)
     body = []
     for row in g.index:
         tds = []
         for col in g.columns:
             c = g.at[row, col]
-            if not isinstance(c, checker.CellCheck):
+            if not hasattr(c, "status"):            # empty grid position
                 tds.append("<td></td>")
                 continue
             tip = escape(f"{c.ref}: {checker.STATUS_LABEL[c.status]}"
@@ -389,7 +465,8 @@ def grid_html(res: checker.PieceResult) -> str:
             tds.append(f"<td title=\"{tip}\" style=\"background:{COLORS[c.status]}\">"
                        f"{SYMBOL[c.status]}</td>")
         body.append(f"<tr><th>{escape(row)}</th>{''.join(tds)}</tr>")
-    return (f"<div class='aa-grid'><table><thead><tr><th></th>{head}</tr></thead>"
+    narrow = " narrow" if len(g.columns) > 12 else ""
+    return (f"<div class='aa-grid{narrow}'><table><thead><tr><th></th>{head}</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table></div>")
 
 
@@ -397,7 +474,8 @@ def legend() -> None:
     st.markdown("<div class='aa-legend'>" + "".join(
         f"<span><span style='background:{COLORS[k]};color:#222;padding:0 .35rem;border-radius:3px'>"
         f"{SYMBOL[k]}</span> {checker.STATUS_LABEL[k].split(' ', 1)[1]}</span>"
-        for k in ("ok", "wrong", "carried", "typed", "blank", "error", "decision"))
+        for k in ("ok", "wrong", "carried", "typed", "blank", "error", "decision", "waiting",
+                  "helper"))
         + "</div>", unsafe_allow_html=True)
 
 
@@ -450,6 +528,80 @@ def submit_piece(key: str, res: checker.PieceResult) -> None:
     save_state(f"submitted:{key}")
 
 
+def hybrid_start_guide(scn, expanded: bool) -> None:
+    """Where to start the hybrid, and why — using the student's own submitted plans."""
+    p = scn.params
+    with st.expander("Where to start: build the hybrid from your LEVEL plan (and why)",
+                     expanded=expanded):
+        mets = {k: (SS["pieces"][k]["submitted"] or {}).get("metrics", {}).get(k)
+                for k in ("chase", "level")}
+        mets = {k: v for k, v in mets.items() if v}
+        if len(mets) == 2:
+            rows = []
+            for m, lab in (("Labor Cost", "Labor"), ("Hiring Cost", "Hiring"),
+                           ("Layoff Cost", "Layoffs"), ("Holding Cost", "Holding"),
+                           ("Backorder Cost", "Backorders"), ("Total Cost", "TOTAL")):
+                rows.append({"Your plans": lab, "Chase": f"${mets['chase'][m]:,.0f}",
+                             "Level": f"${mets['level'][m]:,.0f}"})
+            rows.append({"Your plans": "On-time fulfillment",
+                         "Chase": f"{mets['chase']['On-Time Fulfillment %']:.1f}%",
+                         "Level": f"{mets['level']['On-Time Fulfillment %']:.1f}%"})
+            rows.append({"Your plans": "Months ending with backorders",
+                         "Chase": f"{mets['chase']['Months With Backorders']:.0f}",
+                         "Level": f"{mets['level']['Months With Backorders']:.0f}"})
+            md_table(pd.DataFrame(rows))
+        st.markdown(
+            "**Why start from the level plan?** A hybrid keeps a steady *base* workforce and "
+            "uses short-term options — overtime, subcontracting, a little inventory — for the "
+            "peak. Your level plan already *is* that steady base, so you only have to fix its "
+            "weak months. Its problems sit in specific months (stock building up early, "
+            "customers waiting in the peak), which is exactly what overtime and subcontracting "
+            "are for. The chase plan's big cost — hiring and laying off — comes from changing "
+            "the workforce every month, so improving it means rebuilding the whole plan.")
+        req = float(p["service_requirement_pct"])
+        if len(mets) == 2:
+            lv, ch = mets["level"], mets["chase"]
+            if req > 0 and lv["On-Time Fulfillment %"] + 1e-9 < req:
+                st.markdown(f"**Your first target:** your level plan ships only "
+                            f"{lv['On-Time Fulfillment %']:.1f}% of demand on time; the hybrid "
+                            f"must reach {req:g}%. Find the months where its backorders appear.")
+            if ch["Total Cost"] < lv["Total Cost"]:
+                st.markdown("Your chase plan was cheaper — so once the peak is fixed, try "
+                            "borrowing from it: one or two workforce changes during the year "
+                            "(not twelve) can cut the level plan's holding cost.")
+        st.markdown(
+            "**Steps**\n"
+            "1. Copy your Level Plan's columns onto the Hybrid Plan sheet. For **Workers** and "
+            "**Regular Production**, paste *values* (Paste Special → Values) or type them — they "
+            "are now your decisions, not formulas pointing at the level planning cells.\n"
+            "2. Add the columns a hybrid also needs: overtime, subcontracting, total production "
+            "and their costs, and fill the hybrid planning cells.\n"
+            "3. Upload. The app checks your formulas and tests every limit; note which months "
+            "break one.\n"
+            "4. Fix those months with the cheapest extra bottles (below), one change at a time.\n"
+            "5. Try moving the base workforce up or down, or changing it once mid-year. Each "
+            "upload shows your total cost next to the chase and level plans — aim to be feasible "
+            "and cheaper than both.")
+        cap = scn.cap_month
+        hire_cycle = (p["hiring_cost"] + p["layoff_cost"] + p["regular_labor_cost"]) / cap
+        st.markdown("**What one extra bottle in a busy month costs you** (from your given data):")
+        md_table(pd.DataFrame([
+            {"Option": "Overtime", "Cost per bottle": f"${p['overtime_cost']:,.2f}",
+             "Limits": f"only when regular capacity is full; up to {p['overtime_pct']:.0%} of it"},
+            {"Option": "Subcontract", "Cost per bottle": f"${p['subcontract_cost']:,.2f}",
+             "Limits": f"up to {p['subcontract_capacity']:,.0f} bottles a month"},
+            {"Option": "Make it earlier and hold it",
+             "Cost per bottle": f"${p['holding_cost']:,.2f} per month held",
+             "Limits": "needs spare regular capacity in an earlier month (already paid for)"},
+            {"Option": "Let the customer wait",
+             "Cost per bottle": f"${p['backorder_cost']:,.2f} per month late",
+             "Limits": "hurts on-time fulfillment; nothing may be owed at the end of December"},
+            {"Option": "Hire a worker for one month",
+             "Cost per bottle": f"about ${hire_cycle:,.2f}",
+             "Limits": f"hire + layoff + a month's labor, spread over {cap:,.0f} bottles"},
+        ]))
+
+
 def show_guidance(key: str, scn) -> None:
     ps = SS["pieces"][key]
     st.markdown(f"<div class='aa-card'><b>The goal.</b> {escape(GOALS[key])}</div>",
@@ -483,6 +635,8 @@ def show_guidance(key: str, scn) -> None:
     if key != "summary":
         with st.expander("Your company's policies: safety stock, backorders, workers"):
             show_policies(scn)
+    if key == "hybrid":
+        hybrid_start_guide(scn, expanded=not ps["attempts"])
     if ps["help"] or ps["colhelp"]:
         with st.expander(f"Your hints so far ({len(ps['help']) + len(ps['colhelp'])})"):
             res = SS["results"].get(key) or checker.PieceResult(key, "")
@@ -631,10 +785,16 @@ def page_piece(key: str) -> None:
             st.caption(text.md(f"Your hybrid costs ${mine:,.0f} (if your formulas are right): "
                                + " · ".join(f"{k} ${v:,.0f}" for k, v in others.items())))
     show_feedback(key, res, ps)
-    if key != "summary" and not checker.grid(res).empty:
-        st.markdown("**Cell by cell** — same layout as your sheet; hover a cell for details")
+    if key != "summary" and res.cells:
+        st.markdown("**Cell by cell** — every column you built, laid out like your sheet; hover "
+                    "a cell for details")
         legend()
-        st.markdown(grid_html(res), unsafe_allow_html=True)
+        g = checker.grid(res)
+        if not g.empty:
+            st.markdown(grid_html(res), unsafe_allow_html=True)
+        plan = [c for c in res.cells if c.row_label == "Planning"]
+        st.markdown("Planning cells: " + " · ".join(
+            f"{c.ref} {SYMBOL[c.status]} {escape(c.label)}" for c in plan))
     elif key == "summary":
         md_table(pd.DataFrame([{"Cell": c.ref, "Item": c.label,
                                 "Status": checker.STATUS_LABEL[c.status],

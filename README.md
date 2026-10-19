@@ -14,7 +14,7 @@ peak. Each student ID produces its own reproducible demand forecast, so answers 
 
 | Step | What the student does |
 |------|-----------------------|
-| **1 · Scenario & workbook** | Signs in, studies the demand forecast and given data, downloads a personal `.xlsx`. |
+| **1 · Scenario & workbook** | Signs in, studies the demand forecast, **chooses the two planning policies** (below), and downloads a personal `.xlsx` built for them. |
 | **2 · Chase plan** | Designs the chase worksheet, uploads, fixes, re-uploads; submits when it is all correct. |
 | **3 · Level plan** | Opens once the chase plan is submitted. Same loop. |
 | **4 · Hybrid plan** | Opens after the level plan. The student chooses workers, regular production, overtime and subcontracting; the plan must be correct **and** respect every limit. |
@@ -80,9 +80,41 @@ instructor, not a grade.
 ◆ hybrid decision (the student's choice)
 
 The results show a "What to work on" list (root causes only), the column check, and a grid laid
-out like the student's own sheet.
+out like the student's own sheet: every column they built (helper columns shown as "not checked"),
+the totals row and the planning cells. Wide sheets such as the hybrid switch to vertical headings
+so all columns fit; hybrid columns wait (…) until the decisions are filled in.
 
-## Planning policies (stated to students)
+## Where to start the hybrid
+
+The hybrid step opens with a guide built from the student's own submitted plans: a side-by-side
+cost breakdown of their chase and level plans, and why the hybrid should start from the **level
+plan** — it is already the steady base workforce a hybrid keeps, and its problems sit in specific
+peak months (backorders, missed on-time target) that overtime and subcontracting are designed to
+fix, whereas the chase plan's main cost comes from changing the workforce every month. It names
+the first target (e.g. "your level plan ships 79.9% on time; the hybrid needs 95%"), gives five
+steps (copy the level columns and paste the workforce and production as *values*, add the hybrid
+columns, upload, fix the breaking months, try moving the base workforce), and compares what one
+extra bottle in a busy month costs: overtime, subcontracting, building ahead and holding, letting
+the customer wait, or hiring for a month.
+
+## Planning policies (two switches)
+
+On step 1 the student sets two switches before downloading the workbook:
+
+| Switch | Options |
+|---|---|
+| **Safety stock** | *No safety stock* (EndTarget = 0) · *Keep a safety stock* (EndTarget = the safety-stock quantity) |
+| **Workforce** | *Whole workers only* (round up; idle capacity is paid) · *Fractional workers* (capacity grows in small increments — part-time hours — with no rounding) |
+
+The workbook, answer key, checker and hints are all built for the chosen policies. The switches
+lock once the first piece is submitted, because every piece must follow the same rules; changing
+them before that asks the student to download the workbook again, and an upload made for the
+other policies is refused with a message saying which switch differs. Instructors who want fixed
+policies set `student_sets_policies=false` and choose `safety_stock_policy` / `worker_policy`.
+When the policy is *no safety stock*, the safety-stock figure is not shown anywhere — not on the
+Scenario sheet, not as an Excel name, not in the app.
+
+### What students are told
 
 The Scenario sheet, the Start Here sheet and step 1 of the app spell out three company
 policies — as business rules, not formulas:
@@ -148,6 +180,7 @@ form or by URL: `?cfg=<base64 json>`, `?game=<code>`, `?seed=<int>`, `?manifest=
 | `safety_stock_policy` | `none` | `maintain` makes `EndTarget` = safety stock |
 | `beginning_backorders` | 0 | orders still owed before January (`BeginBackorders`) |
 | `worker_policy` | `whole` | `partial` allows fractional workers (no rounding) |
+| `student_sets_policies` | true | students choose the two policies above on step 1 |
 | `scenario_preset` | `standard` | `strong_seasonal`, `stability_favored`, `limited_flex`, `tight_storage` |
 | `include_hybrid` | true | include the Hybrid Plan piece |
 | `require_formulas` | true | a typed number in a calculated cell is not accepted |

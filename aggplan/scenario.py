@@ -36,7 +36,7 @@ PRESET_LABELS: Dict[str, str] = {
 # Parameters that change presentation only, never a correct answer. They are excluded from
 # the config hash, so an instructor can retune them mid-course without invalidating workbooks.
 NON_MODEL_PARAMS = frozenset({
-    "include_hybrid", "require_formulas", "min_justification_words", "assignment_name",
+    "include_hybrid", "student_sets_policies", "require_formulas", "min_justification_words", "assignment_name",
     "report_timezone",
 })
 
@@ -51,7 +51,8 @@ NAME_KEYS: List[Tuple[str, str, str, str]] = [
      "bottles"),
     ("SafetyStock", "safety_stock", "Safety-stock quantity (see Planning policies below)",
      "bottles"),
-    ("EndTarget", "_target", "Ending-inventory target your policy sets (see below)", "bottles"),
+    ("EndTarget", "_target", "Ending-inventory target your safety-stock policy sets (see below)",
+     "bottles"),
     ("MaxInventory", "max_inventory", "Storage capacity (most bottles you can hold)", "bottles"),
     ("StartWorkers", "starting_workforce", "Workers employed before January", "workers"),
     ("BottlesPerHour", "bottles_per_hour", "Output of one worker per hour", "bottles/hour"),
@@ -132,8 +133,13 @@ class Scenario:
     def name_value(self, key: str) -> float:
         return self.target if key == "_target" else float(self.params[key])
 
+    def name_keys(self) -> List[Tuple[str, str, str, str]]:
+        """The given data shown to the student. Safety stock is listed only when the policy
+        keeps it — otherwise it plays no part in any plan and would only confuse."""
+        return [k for k in NAME_KEYS if self.maintains_safety or k[1] != "safety_stock"]
+
     def named_values(self) -> Dict[str, float]:
-        return {name: self.name_value(key) for name, key, _, _ in NAME_KEYS}
+        return {name: self.name_value(key) for name, key, _, _ in self.name_keys()}
 
     # ---- identity ------------------------------------------------------------
     @property
