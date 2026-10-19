@@ -6,8 +6,9 @@ tools/recalc_in_excel.ps1 on each:
 
   python tests/make_fixtures.py
 
-  key_seed7.xlsx       complete answer key incl. a hybrid plan (Excel-calculated)
+  key_seed7.xlsx       complete answer key incl. a hybrid plan
   mistakes_seed7.xlsx  typical slips: a typed number, a missing $, a short justification
+  shuffled_seed7.xlsx  chase columns in a student's own order with their own headings
 """
 
 from __future__ import annotations
@@ -23,13 +24,25 @@ sys.path.insert(0, ROOT)
 
 from openpyxl import load_workbook  # noqa: E402
 
-from aggplan import workbook  # noqa: E402
+from aggplan import layout as L, workbook  # noqa: E402
 from aggplan.engine import Decision  # noqa: E402
 from aggplan.scenario import resolve_scenario  # noqa: E402
 
 SEED, SID, NAME = 7, "S1", "Test Student"
 HYBRID = Decision([11] * 12, [11000] * 12, [0] * 5 + [1000, 2000] + [0] * 5, [0] * 12)
 FIX = os.path.join(HERE, "fixtures")
+
+# A student's own design: different order, different words, one helper column.
+SHUFFLED_CHASE = [
+    ("Beginning Inventory", "Starting Stock"), ("Beginning Backorders", "Backlog Carried In"),
+    ("Regular Production", "Bottles Made"), ("Workers", "Crew"),
+    ("Regular Capacity", "Regular Capacity"),
+    ("Hires", "New Hires"), ("Layoffs", "Fired"),
+    ("Ending Backorders", "Unfilled Orders"), ("Ending Inventory", "Closing Stock"),
+    ("Labor Cost", "Wages"), ("Holding Cost", "Storage Cost"),
+    ("Backorder Cost", "Shortage Penalty"), ("Hiring Cost", "Hiring Expense"),
+    ("Layoff Cost", "Severance"), ("Total Cost", "Monthly Total Cost"),
+]
 
 
 def recalc(src: str, dst: str) -> None:
@@ -41,19 +54,26 @@ def recalc(src: str, dst: str) -> None:
 def main() -> None:
     os.makedirs(FIX, exist_ok=True)
     scn = resolve_scenario({}, SEED)
+    raw = os.path.join(FIX, "_raw.xlsx")
+
     key = workbook.build_workbook(scn, student_name=NAME, student_id=SID, solution=True,
                                   hybrid_decision=HYBRID)
-    raw = os.path.join(FIX, "_raw_key.xlsx")
     open(raw, "wb").write(key)
     recalc(raw, os.path.join(FIX, "key_seed7.xlsx"))
 
     wb = load_workbook(io.BytesIO(key))
-    wb["Chase Plan"]["N3"].value = 0                                   # typed, not calculated
-    for r in range(2, 14):                                             # =S5 filled down, no $
-        wb["Level Plan"][f"E{r}"].value = f"=S{3 + r}"
-    wb["Summary"]["B22"].value = "Too short."
+    wb[L.SHEET_CHASE]["N3"].value = 0                                   # typed, not calculated
+    rate = L.planning_ref("level", "level_rate")                       # =C20 filled down, no $
+    for i in range(L.N_MONTHS):
+        wb[L.SHEET_LEVEL][f"E{L.month_row(i)}"].value = f"=C{int(rate[1:]) + i}"
+    wb[L.SHEET_SUMMARY][L.JUSTIFY_CELL].value = "Too short."
     wb.save(raw)
     recalc(raw, os.path.join(FIX, "mistakes_seed7.xlsx"))
+
+    shuffled = workbook.build_workbook(scn, student_name=NAME, student_id=SID, solution=True,
+                                       hybrid_decision=HYBRID, columns={"chase": SHUFFLED_CHASE})
+    open(raw, "wb").write(shuffled)
+    recalc(raw, os.path.join(FIX, "shuffled_seed7.xlsx"))
     os.remove(raw)
 
 

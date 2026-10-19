@@ -1,13 +1,14 @@
 """
 Juicetification: Aggregate Anxiety — Excel edition (V3)
 
-Students download a personal Excel workbook, build a chase plan and a level plan (and an
-optional hybrid) with their own Excel formulas, upload the file, and get cell-by-cell
-feedback until everything checks out. Then they download a PDF check report and submit
-it with the workbook.
+Students build an aggregate plan in their own Excel workbook — choosing the columns as well
+as the formulas — and submit it in pieces: the chase plan, the level plan, the hybrid plan,
+and finally the comparison and recommendation. Each piece is uploaded and checked on its
+own; every new upload unlocks more help on whatever is still wrong, but never the answer.
 
-Four steps, always visible in the sidebar:
-  1 Meet your scenario   2 Build it in Excel   3 Upload & check   4 Submit
+Steps (always visible in the sidebar):
+  1 Scenario & workbook   2 Chase plan   3 Level plan   4 Hybrid plan
+  5 Compare & recommend   6 Final report
 
 Run:  streamlit run app.py        (see README.md for instructor configuration)
 """
@@ -16,6 +17,8 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+from html import escape
+from typing import Dict, List
 
 import altair as alt
 import pandas as pd
@@ -26,18 +29,15 @@ import student_store as store
 from juice_director import resolve_config, serve_manifest_if_requested
 from manifest import MANIFEST
 
-from aggplan import checker, layout as L, report, text, workbook
+from aggplan import checker, hints, layout as L, report, text, workbook
 from aggplan import identity as ident
+from aggplan.recognize import HELPER
 from aggplan.scenario import NAME_KEYS, resolve_scenario
 
 st.set_page_config(page_title="Aggregate Anxiety — Excel", page_icon="🧃", layout="wide")
 SS = st.session_state
 serve_manifest_if_requested(MANIFEST)
 CFG, CTX = resolve_config(MANIFEST)
-
-STEPS = [("scenario", "Meet your scenario"), ("build", "Build it in Excel"),
-         ("check", "Upload & check"), ("submit", "Submit")]
-STEP_KEYS = [k for k, _ in STEPS]
 
 st.markdown("""
 <style>
@@ -48,10 +48,12 @@ st.markdown("""
   .aa-grid {overflow-x: auto;}
   .aa-grid table {border-collapse: collapse; font-size: .8rem; margin-bottom: .8rem;}
   .aa-grid th, .aa-grid td {border: 1px solid rgba(128,128,128,.45); padding: .2rem .35rem;}
-  .aa-grid thead th {font-weight: 600; vertical-align: bottom; max-width: 6.5rem;
+  .aa-grid thead th {font-weight: 600; vertical-align: bottom; max-width: 7rem;
                      white-space: normal; line-height: 1.1;}
   .aa-grid tbody th {text-align: left; font-weight: 600; white-space: nowrap;}
   .aa-grid td {text-align: center; color: #222; min-width: 2rem; cursor: default;}
+  .aa-hint {border-left: 4px solid #1F3864; padding: .1rem 0 .1rem .8rem; margin: .2rem 0 .9rem 0;}
+  .aa-hint .lvl {font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; opacity: .7;}
 </style>""", unsafe_allow_html=True)
 
 # --------------------------------------------------------------------------- #
@@ -72,9 +74,33 @@ if identity.mode == "blocked":
         st.rerun()
     st.stop()
 
-SS.setdefault("step", "scenario")
+INCLUDE_HYBRID = bool(resolve_scenario(CFG, 1).params.get("include_hybrid", True))
+PIECES = ["chase", "level"] + (["hybrid"] if INCLUDE_HYBRID else []) + ["summary"]
+STEPS = [("start", "Scenario & workbook")] + [(k, checker.PIECE_TITLES[k]) for k in PIECES] \
+    + [("report", "Final report")]
+STEP_KEYS = [k for k, _ in STEPS]
+GOALS = {
+    "chase": "Change the workforce every month so that production follows demand. You'll "
+             "carry almost no inventory, but you'll hire and lay off often.",
+    "level": "Keep one steady production rate and one workforce all year. Inventory builds "
+             "up in slow months and is used up in busy ones — and if it runs out, customers wait.",
+    "hybrid": "Design your own strategy. You choose the workers, regular production, overtime "
+              "and subcontracting each month; your formulas work out the rest. It must respect "
+              "every limit — and the goal is to beat both the chase and the level plan.",
+    "summary": "Bring the plans together on the Summary sheet, let Excel find the cheaper one, "
+               "and recommend a plan in your own words.",
+}
+
+SS.setdefault("step", "start")
 SS.setdefault("student", None)          # {"name", "sid"}
-SS.setdefault("history", [])            # one entry per check
+SS.setdefault("results", {})            # piece -> latest PieceResult (not persisted)
+
+
+def new_piece() -> dict:
+    return {"attempts": [], "help": {}, "colhelp": {}, "submitted": None}
+
+
+SS.setdefault("pieces", {k: new_piece() for k in PIECES})
 
 
 def seed_for(sid: str) -> int:
@@ -88,66 +114,90 @@ def scenario():
     return resolve_scenario(CFG, seed_for(stu["sid"])) if stu else None
 
 
+def submitted(key: str) -> bool:
+    return bool(SS["pieces"].get(key, {}).get("submitted"))
+
+
+def unlocked(key: str) -> bool:
+    if key == "start":
+        return True
+    if not SS["student"]:
+        return False
+    if key == "report":
+        return True
+    i = PIECES.index(key)
+    return i == 0 or submitted(PIECES[i - 1])
+
+
 def go(step: str) -> None:
     SS["step"] = step
 
 
-def save_progress(step: str, fraction: float) -> None:
-    """Best effort: lets the Director's roster show where each student is."""
+# ---- saving (optional Dropbox store; lets a student resume and feeds the roster) ----
+def save_state(step: str) -> None:
     stu = SS.get("student")
     if not (identity.recorded and store.enabled() and stu):
         return
+    scn = scenario()
+    done = sum(submitted(k) for k in PIECES)
     try:
-        store.save(GAME, stu["sid"], {"name": stu["name"]}, progress=fraction, step=step)
+        store.save(GAME, stu["sid"], {"name": stu["name"], "seed": scn.seed,
+                                      "config_hash": scn.config_hash, "pieces": SS["pieces"]},
+                   progress=done / len(PIECES), step=step)
     except Exception:                                                  # noqa: BLE001
         pass
 
 
-def latest():
-    return SS["history"][-1] if SS["history"] else None
+def restore_state() -> None:
+    if SS.get("_restored") or not (identity.recorded and store.enabled() and URL_SID):
+        return
+    SS["_restored"] = True
+    try:
+        saved = store.load(GAME, URL_SID) or {}
+    except Exception:                                                  # noqa: BLE001
+        return
+    scn = resolve_scenario(CFG, seed_for(URL_SID))
+    if saved.get("config_hash") == scn.config_hash and isinstance(saved.get("pieces"), dict):
+        SS["student"] = {"name": saved.get("name") or URL_SID, "sid": URL_SID}
+        for k in PIECES:
+            SS["pieces"][k] = {**new_piece(), **saved["pieces"].get(k, {})}
 
 
-def step_done(key: str) -> bool:
-    last = latest()
-    return {"scenario": SS["student"] is not None,
-            "build": bool(SS.get("downloaded")) or last is not None,
-            "check": bool(last and last["result"].complete),
-            "submit": bool(SS.get("report") and SS["report"].get("final"))}[key]
+restore_state()
 
 
 # --------------------------------------------------------------------------- #
-# Sidebar: who you are + the four steps
+# Sidebar
 # --------------------------------------------------------------------------- #
 with st.sidebar:
     st.markdown("## 🧃 Aggregate Anxiety")
-    st.caption("Aggregate planning, calculated in Excel")
+    st.caption("Aggregate planning, built by you in Excel")
     stu = SS["student"]
     if stu:
-        scn_ = scenario()
-        st.markdown(f"**{stu['name']}**  \nID {stu['sid']} · Scenario #{scn_.seed}")
+        st.markdown(f"**{stu['name']}**  \nID {stu['sid']} · Scenario #{scenario().seed}")
         st.caption(identity.label)
     st.markdown("---")
     for n, (key, label) in enumerate(STEPS, start=1):
-        mark = "✔" if step_done(key) else f"{n}"
+        if key in PIECES and submitted(key):
+            mark = "✔"
+        elif not unlocked(key):
+            mark = "🔒"
+        else:
+            mark = str(n)
         st.button(f"{mark}  {label}", key=f"nav_{key}", width="stretch",
                   type="primary" if SS["step"] == key else "secondary",
-                  disabled=(key != "scenario" and not SS["student"] and key != "check"),
-                  on_click=go, args=(key,))
-    last = latest()
-    if last and not last["result"].fatal:
-        r = last["result"]
-        req = [s for s in r.sheets.values() if s.required]
-        ok = sum(s.n_ok for s in req)
-        tot = sum(s.n_total for s in req) or 1
+                  disabled=not unlocked(key), on_click=go, args=(key,))
+    if stu:
+        done = sum(submitted(k) for k in PIECES)
         st.markdown("---")
-        st.caption(f"Last check: {ok} of {tot} required cells correct")
-        st.progress(ok / tot)
+        st.caption(f"{done} of {len(PIECES)} pieces submitted")
+        st.progress(done / len(PIECES))
     st.markdown("---")
     with st.expander("How this works"):
-        st.write("1. Get your personal scenario.  \n2. Download your workbook and do every "
-                 "calculation in Excel.  \n3. Upload it; fix what is flagged; upload again "
-                 "as often as you like.  \n4. Download your check report and submit it with "
-                 "your workbook.")
+        st.write("Build the workbook one piece at a time. For each piece: design the columns, "
+                 "write the formulas, save, upload. The app shows what's right; every new upload "
+                 "unlocks more help on what's still wrong. When a piece is all correct, submit "
+                 "it and the next one opens.")
 
 
 def scroll_to_top(token: str) -> None:
@@ -178,33 +228,40 @@ def nav_buttons(key: str, next_label: str = "", next_disabled: bool = False) -> 
         c1.button(f"← {STEPS[i - 1][1]}", on_click=go, args=(STEP_KEYS[i - 1],),
                   width="stretch", key=f"back_{key}")
     if i < len(STEPS) - 1:
+        nxt = STEP_KEYS[i + 1]
         c3.button(next_label or f"{STEPS[i + 1][1]} →", type="primary", width="stretch",
-                  on_click=go, args=(STEP_KEYS[i + 1],), disabled=next_disabled,
+                  on_click=go, args=(nxt,), disabled=next_disabled or not unlocked(nxt),
                   key=f"next_{key}")
 
 
+def md_table(df: pd.DataFrame) -> None:
+    """A wrapped, full-width table for text-heavy content (st.dataframe truncates text)."""
+    esc = lambda x: text.md(str(x)).replace("|", "\\|").replace("\n", " ")  # noqa: E731
+    lines = ["| " + " | ".join(df.columns) + " |", "|" + "---|" * len(df.columns)]
+    lines += ["| " + " | ".join(esc(v) for v in row) + " |" for row in df.itertuples(index=False)]
+    st.markdown("\n".join(lines))
+
+
 # --------------------------------------------------------------------------- #
-# Step 1: scenario
+# Step 1: scenario & workbook
 # --------------------------------------------------------------------------- #
 def demand_chart(scn) -> alt.Chart:
     df = pd.DataFrame({"Month": [m[:3] for m in scn.months], "Demand": scn.demand})
     return (alt.Chart(df).mark_bar(color="#F28C28").encode(
-        x=alt.X("Month", sort=None, title=None),
-        y=alt.Y("Demand", title="bottles"),
-        tooltip=["Month", alt.Tooltip("Demand", format=",.0f")]).properties(height=260))
+        x=alt.X("Month", sort=None, title=None), y=alt.Y("Demand", title="bottles"),
+        tooltip=["Month", alt.Tooltip("Demand", format=",.0f")]).properties(height=240))
 
 
-def page_scenario() -> None:
-    header("scenario")
+def page_start() -> None:
+    header("start")
     if not SS["student"]:
         st.write("You are the operations planner at **Juicetification Inc.**, a juice bottler "
-                 "with a strong summer peak. You will plan a year of production in Excel. "
-                 "First, tell us who you are — your student ID gives you your own scenario.")
+                 "with a strong summer peak. You'll plan a year of production in Excel — "
+                 "designing the worksheet yourself. Your student ID gives you your own scenario.")
         with st.form("who"):
             name = st.text_input("Your name")
             sid = st.text_input("Student ID", value=URL_SID or "", disabled=bool(URL_SID),
-                                help="Your scenario is made from this ID, so use the same ID "
-                                     "every time.")
+                                help="Your scenario is made from this ID: use the same ID every time.")
             if st.form_submit_button("Start", type="primary"):
                 sid = (URL_SID or sid).strip()
                 if not name.strip() or not sid:
@@ -213,187 +270,110 @@ def page_scenario() -> None:
                     SS["student"] = {"name": name.strip(), "sid": sid}
                     if not URL_SID and not PRACTICE:
                         store.set_student_id(sid)   # survives a refresh; enables recording
-                    save_progress("scenario", 0.05)
+                    save_state("start")
                     st.rerun()
-        st.info("**Coming back?** If you already have your workbook, go straight to "
-                "**Upload & check** in the sidebar — the app recognises your file.")
         return
 
     scn = scenario()
+    stu = SS["student"]
     for note in scn.notices:
         st.warning(note)
     st.write("Demand for bottled juice swings with the seasons. Your job is to decide how many "
-             "workers to employ and how much to produce each month so that the year's demand "
-             "is met at the lowest total cost. You will build and compare two classic plans:")
-    c1, c2 = st.columns(2)
-    c1.markdown("<div class='aa-card'><b>Chase plan</b><br>Change the workforce every month so "
-                "production follows demand. Little inventory, lots of hiring and layoffs."
-                "</div>", unsafe_allow_html=True)
-    c2.markdown("<div class='aa-card'><b>Level plan</b><br>Keep one steady workforce and "
-                "production rate all year. Inventory builds in slow months and is used up "
-                "in busy ones.</div>", unsafe_allow_html=True)
-    st.subheader("Your demand forecast")
+             "workers to employ and how much to make each month so the year's demand is met at "
+             "the lowest total cost.")
     m = st.columns(4)
     m[0].metric("Annual demand", f"{scn.total_demand:,.0f}")
-    m[1].metric("Peak month", f"{scn.months[scn.demand.index(max(scn.demand))]}")
+    m[1].metric("Peak month", scn.months[scn.demand.index(max(scn.demand))])
     m[2].metric("Peak demand", f"{max(scn.demand):,.0f}")
     m[3].metric("Lowest demand", f"{min(scn.demand):,.0f}")
     st.altair_chart(demand_chart(scn), use_container_width=True)
-    st.subheader("Given data")
-    st.caption(text.md(text.target_sentence(scn)))
-    rows = pd.DataFrame(text.param_rows(scn), columns=["Item", "Value", "Unit"])
-    md_table(rows)
-    nav_buttons("scenario", "Next: get your Excel workbook →")
-
-
-# --------------------------------------------------------------------------- #
-# Step 2: build in Excel
-# --------------------------------------------------------------------------- #
-def md_table(df: pd.DataFrame) -> None:
-    """A wrapped, full-width table for text-heavy content (st.dataframe truncates text)."""
-    esc = lambda x: text.md(str(x)).replace("|", "\\|")                # noqa: E731
-    lines = ["| " + " | ".join(df.columns) + " |", "|" + "---|" * len(df.columns)]
-    lines += ["| " + " | ".join(esc(v) for v in row) + " |" for row in df.itertuples(index=False)]
-    st.markdown("\n".join(lines))
-
-
-def rules_table(kind: str) -> pd.DataFrame:
-    rules = text.column_rules(kind)
-    rows = []
-    for pc in L.PLANNING[kind][2]:
-        rows.append({"Cell": L.planning_ref(kind, pc.key), "What": pc.label,
-                     "How to calculate": text.PLANNING_RULES[pc.key]})
-    for j, col in enumerate(L.PLAN_COLUMNS[kind]):
-        if col.kind == "given":
-            continue
-        letter = chr(65 + j)
-        rows.append({"Cell": f"{letter}2:{letter}13", "What": col.heading.rstrip(" ✎"),
-                     "How to calculate": rules.get(col.engine, "")})
-    rows.append({"Cell": "row 14", "What": "Totals", "How to calculate": text.TOTAL_RULE})
-    return pd.DataFrame(rows)
-
-
-def page_build() -> None:
-    header("build")
-    scn = scenario()
-    stu = SS["student"]
-    if SS.get("wb_for") != (stu["sid"], scn.config_hash):
-        SS["wb_bytes"] = workbook.build_workbook(scn, student_name=stu["name"],
-                                                 student_id=stu["sid"], game=GAME)
-        SS["wb_for"] = (stu["sid"], scn.config_hash)
-
-    c1, c2 = st.columns([1, 1.4])
+    c1, c2 = st.columns([1.2, 1])
     with c1:
-        st.markdown("<div class='aa-card'><b>Your personal workbook</b><br>Your demand and "
-                    "numbers are already in it. Every calculation is yours to build with "
-                    "Excel formulas.</div>", unsafe_allow_html=True)
-
-        def _downloaded():
-            SS["downloaded"] = True
-            save_progress("build", 0.15)
-
+        st.subheader("Given data")
+        st.caption(text.md(text.target_sentence(scn)))
+        md_table(pd.DataFrame(text.param_rows(scn), columns=["Item", "Value", "Unit"]))
+    with c2:
+        st.subheader("Your workbook")
+        if SS.get("wb_for") != (stu["sid"], scn.config_hash):
+            SS["wb_bytes"] = workbook.build_workbook(scn, student_name=stu["name"],
+                                                     student_id=stu["sid"], game=GAME)
+            SS["wb_for"] = (stu["sid"], scn.config_hash)
         st.download_button("⬇ Download my Excel workbook", SS["wb_bytes"],
                            file_name=workbook.file_name(stu["name"], stu["sid"]),
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           type="primary", width="stretch", on_click=_downloaded)
-        st.caption("Works in Excel (Windows/Mac/web) and Google Sheets (then File → Download → "
-                   "Microsoft Excel .xlsx).")
-    with c2:
-        st.markdown("**Colour key in the workbook**")
-        st.markdown("🟨 Given data — don't change  \n🟦 Your formula goes here  \n"
-                    "🟩 Your decision (Hybrid Plan only)  \n🔷 Totals row — your SUM formula")
-
-    st.subheader("Work through the sheets in this order")
-    st.caption("The same instructions are on the workbook's Start Here sheet and in the "
-               "comment on every column heading.")
-    tabs = st.tabs(["1 · Chase Plan", "2 · Level Plan", "3 · Summary"]
-                   + (["4 · Hybrid (optional)"] if scn.params.get("include_hybrid", True) else [])
-                   + ["Excel tips"])
-    with tabs[0]:
-        st.write("Make exactly what each month needs, changing the workforce to match.")
-        st.markdown("1. Fill the **planning cells** S2–S3.\n2. Fill **January** (row 2) — it "
-                    "uses BeginInv and StartWorkers.\n3. Fill **February** (row 3) — it uses "
-                    "January's results.\n4. Select February's formulas and **fill down** to "
-                    "December.\n5. Add the **totals** in row 14.")
-        md_table(rules_table("chase"))
-    with tabs[1]:
-        st.write("Same production and workforce every month; inventory absorbs the swings.")
-        st.markdown("1. Fill the **planning cells** S2–S6 (capacity, target, total demand, "
-                    "level production, level workforce).\n2. Point every month's Production "
-                    "and Workers at those cells — with **$ signs** (=$S$5) so they stay put when "
-                    "you fill down.\n3. The rest works exactly like the chase plan.")
-        md_table(rules_table("level"))
-    with tabs[2]:
-        st.write("Compare the plans and make a recommendation.")
-        rows = [{"Rows": "Costs and totals", "How": text.SUMMARY_RULES["link"]},
-                {"Rows": "Largest workforce / inventory", "How": "MAX of the plan's column."},
-                {"Rows": "Months with backorders", "How": text.SUMMARY_RULES["Months With Backorders"]},
-                {"Rows": f"Lower-cost plan ({L.LOWER_COST_CELL})", "How": text.SUMMARY_RULES["lower"]},
-                {"Rows": f"Savings ({L.SAVINGS_CELL})", "How": text.SUMMARY_RULES["savings"]},
-                {"Rows": f"Recommendation ({L.RECOMMEND_CELL})", "How": "Pick from the drop-down."},
-                {"Rows": "Justification", "How": "Your own words, using your numbers: cost, "
-                 "workforce changes, inventory, backorders and risk."}]
-        md_table(pd.DataFrame(rows))
-    i = 3
-    if scn.params.get("include_hybrid", True):
-        with tabs[3]:
-            st.write("Optional challenge: mix strategies to beat both plans. The green cells "
-                     "(Workers, Regular Production, Overtime, Subcontract) are your decisions; "
-                     "calculate everything else with formulas, as before.")
-            md_table(rules_table("hybrid"))
-            st.caption("The checker also tests your plan against the limits: capacity, "
-                       "overtime, subcontracting, storage, service level and December "
-                       "backorders.")
-        i = 4
-    with tabs[i]:
-        for t, d in text.EXCEL_TIPS:
-            st.markdown(f"**{t}.** {text.md(d)}")
-        st.markdown("**Functions you'll use:** " + ", ".join(f"`{f}`" for f, _, _ in text.EXCEL_FUNCTIONS))
-        st.markdown("**Names for the given data:** " + ", ".join(f"`{n}`" for n, _, _, _ in NAME_KEYS))
-    nav_buttons("build", "I've saved my workbook — check it →")
+                           type="primary", width="stretch")
+        st.caption("Download it once and keep working in the same file for every piece. Works "
+                   "in Excel and Google Sheets (File → Download → .xlsx).")
+        st.markdown("**You'll submit it in pieces:**")
+        st.markdown("\n".join(f"{i}. **{checker.PIECE_TITLES[k]}** — {GOALS[k].split('.')[0]}."
+                              for i, k in enumerate(PIECES, start=1)))
+        st.markdown("On each plan sheet only **Month** and **Demand** are given. You decide "
+                    "which columns the plan needs, name them, and write the formulas.")
+        with st.expander("Excel tips"):
+            for t, d in text.EXCEL_TIPS:
+                st.markdown(f"**{t}.** {text.md(d)}")
+            st.markdown("**Names for the given data:** "
+                        + ", ".join(f"`{n}`" for n, _, _, _ in NAME_KEYS))
+    nav_buttons("start", "Start the chase plan →")
 
 
 # --------------------------------------------------------------------------- #
-# Step 3: upload & check
+# Piece pages
 # --------------------------------------------------------------------------- #
 COLORS = {"ok": "#C6EFCE", "typed": "#FFEB9C", "carried": "#E4DFEC", "wrong": "#FFC7CE",
           "blank": "#F2F2F2", "error": "#F8CBAD", "text": "#F8CBAD", "uncalc": "#F8CBAD",
           "decision": "#DDEBF7"}
 SYMBOL = {"ok": "✔", "typed": "✎", "carried": "↪", "wrong": "✖", "blank": "○",
-          "error": "⚠", "text": "⚠", "uncalc": "⚠", "decision": "◆", "": ""}
+          "error": "⚠", "text": "⚠", "uncalc": "⚠", "decision": "◆"}
 
 
-def grid_html(sheet: checker.SheetResult) -> str:
-    """The monthly grid as a plain HTML table, laid out like the Excel sheet. Each cell shows
-    a symbol on a colour (never colour alone) and its feedback as a hover tooltip."""
-    from html import escape
-    cells = {(c.row_label, c.group): c for c in sheet.cells
-             if c.row_label != "Planning" and c.sheet == sheet.title}
-    g = checker.grid(sheet)
-    head = "".join(f"<th>{escape(c.rstrip(' ✎'))}</th>" for c in g.columns)
+def item_name(kind: str, item: str, res: checker.PieceResult) -> str:
+    if item.startswith("plan:"):
+        return next(pc.label for pc in L.PLANNING[kind] if pc.key == item[5:]) + " (planning cell)"
+    if item == "total":
+        return "Yearly totals (row 14)"
+    if item.startswith("summary:"):
+        return {"summary:link": "Totals from your plans", "summary:lower": "Lower-cost plan",
+                "summary:savings": "Savings", "summary:recommend": "Recommendation",
+                "summary:justify": "Justification"}.get(item, item[8:])
+    for letter, heading, read_as in res.columns:
+        if read_as == item:
+            return f"{heading} (column {letter})"
+    return item
+
+
+def hint_block(kind: str, item: str, level: int) -> str:
+    steps = hints.hint_text(kind, item, level)
+    parts = []
+    for i, s in enumerate(steps, start=1):
+        parts.append(f"<div class='lvl'>Hint {i} · {hints.LEVEL_NAMES[i]}</div>"
+                     f"<div>{escape(s)}</div>")
+    more = ("" if level >= hints.MAX_LEVEL else
+            "<div class='lvl' style='margin-top:.3rem'>More help unlocks if this is still wrong "
+            "on your next upload.</div>")
+    return f"<div class='aa-hint'>{''.join(parts)}{more}</div>"
+
+
+def grid_html(res: checker.PieceResult) -> str:
+    g = checker.grid(res)
+    if g.empty:
+        return ""
+    head = "".join(f"<th>{escape(c)}</th>" for c in g.columns)
     body = []
     for row in g.index:
         tds = []
         for col in g.columns:
-            c = cells.get((row, col))
-            if c is None:
+            c = g.at[row, col]
+            if not isinstance(c, checker.CellCheck):
                 tds.append("<td></td>")
                 continue
             tip = escape(f"{c.ref}: {checker.STATUS_LABEL[c.status]}"
-                         + (f" (shows {c.shown})" if c.shown else "")
-                         + (f" — {c.message}" if c.message else ""))
+                         + (f" (shows {c.shown})" if c.shown else ""))
             tds.append(f"<td title=\"{tip}\" style=\"background:{COLORS[c.status]}\">"
                        f"{SYMBOL[c.status]}</td>")
         body.append(f"<tr><th>{escape(row)}</th>{''.join(tds)}</tr>")
     return (f"<div class='aa-grid'><table><thead><tr><th></th>{head}</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table></div>")
-
-
-def cell_table(cells) -> None:
-    md_table(pd.DataFrame([{"Cell": c.ref, "Item": c.label,
-                            "Status": checker.STATUS_LABEL[c.status],
-                            "Your value": c.shown or "—", "Feedback": c.message or ""}
-                           for c in cells]))
 
 
 def legend() -> None:
@@ -404,203 +384,320 @@ def legend() -> None:
         + "</div>", unsafe_allow_html=True)
 
 
-def adopt_student_from(book: checker.Book) -> bool:
-    """Coming back with only the workbook: take name/ID from it (unless the URL fixes the ID)."""
-    sid = book.meta.get("student_id", "").strip()
-    if not sid or (URL_SID and sid != URL_SID):
-        return False
-    SS["student"] = {"name": book.meta.get("student_name", "").strip() or sid, "sid": sid}
-    return True
-
-
-def run_check(up) -> None:
+def run_check(key: str, up) -> None:
     data = up.getvalue()
     sha = hashlib.sha256(data).hexdigest()
-    if latest() and latest()["sha"] == sha:
+    ps = SS["pieces"][key]
+    if ps["attempts"] and ps["attempts"][-1]["sha"] == sha and key in SS["results"]:
         return
-    if not SS["student"]:
-        book, err = checker.read_book(data)
-        if err or not adopt_student_from(book):
-            st.error(err or "Start on **Meet your scenario** first (enter your name and ID), "
-                            "then upload.")
-            return
-    scn = scenario()
-    res = checker.check_workbook(data, scn, expected_sid=SS["student"]["sid"])
-    SS["history"].append({"sha": sha, "result": res, "file": up.name,
-                          "at": dt.datetime.now().strftime("%H:%M:%S")})
-    SS.pop("report", None)
+    res = checker.check_piece(data, scenario(), key, expected_sid=SS["student"]["sid"])
+    SS["results"][key] = res
+    if ps["attempts"] and ps["attempts"][-1]["sha"] == sha:
+        return                                   # same file again: not a new attempt
+    ps["attempts"].append({"at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "sha": sha,
+                           "file": up.name, "ok": res.n_ok, "total": res.n_total,
+                           "complete": res.complete, "fatal": bool(res.fatal)})
     if not res.fatal:
-        req = [s for s in res.sheets.values() if s.required]
-        frac = sum(s.n_ok for s in req) / max(1, sum(s.n_total for s in req))
-        save_progress("complete" if res.complete else "check", 0.2 + 0.7 * frac)
-    st.rerun()                      # refresh the sidebar (student card, progress)
+        # more help only where a real mistake persists (blank/carried cells never count)
+        for item in res.problem_items():
+            ps["help"][item] = min(hints.MAX_LEVEL, ps["help"].get(item, 0) + 1)
+        if len(res.columns) >= 3:
+            for concept in res.missing_columns:
+                ps["colhelp"][concept] = min(hints.MAX_COLUMN_LEVEL,
+                                             ps["colhelp"].get(concept, 0) + 1)
+    save_state(key)
+    st.rerun()
 
 
-def page_check() -> None:
-    header("check")
-    st.write("Save your workbook in Excel, then drop it here. Fix what is flagged, save, and "
-             "upload again — as many times as you need.")
-    up = st.file_uploader("Your completed workbook (.xlsx)", type=["xlsx"], key="upload")
-    if up is not None:
-        run_check(up)
-    last = latest()
-    if not last:
-        st.info("No workbook checked yet.")
-        nav_buttons("check", next_disabled=True)
+def piece_record(key: str) -> dict:
+    ps = SS["pieces"][key]
+    sub = ps.get("submitted")
+    first = next((a for a in ps["attempts"] if not a.get("fatal")), None)
+    return {"title": checker.PIECE_TITLES[key],
+            "status": "Submitted" if sub else ("In progress" if ps["attempts"] else "Not started"),
+            "attempts": len([a for a in ps["attempts"] if not a.get("fatal")]),
+            "first": f"{first['ok']} / {first['total']} correct" if first else "",
+            "submitted_at": sub["at"] if sub else "",
+            "help": max(list(ps["help"].values()) + list(ps["colhelp"].values()) + [0]),
+            "file": sub["file"] if sub else "", "sha": sub["sha"] if sub else ""}
+
+
+def submit_piece(key: str, res: checker.PieceResult) -> None:
+    ps = SS["pieces"][key]
+    last = ps["attempts"][-1]
+    ps["submitted"] = {"at": report.now_in(str(scenario().params.get("report_timezone") or ""))
+                       .strftime("%Y-%m-%d %H:%M %Z").strip(),
+                       "sha": res.sha256, "file": last["file"], "metrics": res.metrics,
+                       "feasibility": res.feasibility, "recommendation": res.recommendation,
+                       "justification": res.justification, "words": res.words}
+    save_state(f"submitted:{key}")
+
+
+def show_guidance(key: str, scn) -> None:
+    ps = SS["pieces"][key]
+    st.markdown(f"<div class='aa-card'><b>The goal.</b> {escape(GOALS[key])}</div>",
+                unsafe_allow_html=True)
+    if key == "summary":
+        st.markdown("Fill the **Summary** sheet: each plan's yearly figures, which plan costs "
+                    "less, the savings, your recommendation and why. Use formulas that point "
+                    "at your plan sheets.")
+    else:
+        with st.expander("① Design your columns", expanded=not ps["attempts"]):
+            st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet, only Month and Demand are given. "
+                     "Every month your plan must answer the questions below. Turn each one into "
+                     "a column: type a clear heading in row 1 (from column C on), then the "
+                     "formulas for January–December, then the yearly totals in row 14 under "
+                     "every cost column. Put them in whatever order makes sense to you.")
+            qs = [hints.QUESTIONS[c] for c in L.REQUIRED[key]]
+            st.markdown("\n".join(f"- {q}" for q in qs))
+            if key == "hybrid":
+                st.caption("Four of these are your decisions (workers, regular production, "
+                           "overtime, subcontracting): type them as numbers or formulas. "
+                           "Everything else is calculated.")
+            st.caption("Ask yourself for each one: which other columns or given values does it "
+                       "depend on? That's your formula. Helper columns are welcome.")
+        with st.expander("② Planning cells (do these first)", expanded=not ps["attempts"]):
+            st.write(f"Under the grid on the **{L.PLAN_SHEETS[key]}** sheet:")
+            md_table(pd.DataFrame([{"Cell": L.planning_ref(key, pc.key),
+                                    "Work out": f"{pc.label} ({pc.unit})",
+                                    "Think about": hints.PLANNING[pc.key][0]}
+                                   for pc in L.PLANNING[key]]))
+    if ps["help"] or ps["colhelp"]:
+        with st.expander(f"Your hints so far ({len(ps['help']) + len(ps['colhelp'])})"):
+            res = SS["results"].get(key) or checker.PieceResult(key, "")
+            for item, lvl in ps["help"].items():
+                st.markdown(f"**{escape(item_name(key, item, res))}**")
+                st.markdown(hint_block(key, item, lvl), unsafe_allow_html=True)
+            for concept, lvl in ps["colhelp"].items():
+                st.markdown(f"- {escape(hints.column_hint(key, concept, lvl))}")
+
+
+def show_columns(key: str, res: checker.PieceResult, ps: dict) -> None:
+    st.markdown("**Your columns**")
+    if not res.columns:
+        st.info(f"No column headings yet. Type your headings in row 1 of the "
+                f"{L.PLAN_SHEETS[key]} sheet, starting in column C.")
+    else:
+        rows = []
+        for letter, heading, read_as in res.columns:
+            if read_as == HELPER:
+                read = "helper column (fine — not checked)"
+            elif read_as:
+                guessed = any(n.kind == "guessed" and letter in n.letters for n in res.notes)
+                read = f"✔ {read_as}" + (" (guessed from its numbers)" if guessed else "")
+            else:
+                read = "? not recognised"
+            rows.append({"Column": letter, "Your heading": heading, "Read as": read})
+        md_table(pd.DataFrame(rows))
+    for n in res.notes:
+        if n.kind == "missing":
+            lvl = max(1, ps["colhelp"].get(n.concept, 0))
+            st.warning(hints.column_hint(key, n.concept, lvl))
+        elif n.kind == "duplicate":
+            st.warning(f"Columns {' and '.join(n.letters)} both look like **{n.concept}**. Keep "
+                       "one, or give the other a heading that says what makes it different.")
+        elif n.kind == "guessed":
+            st.info(f"Column {n.letters[0]} (“{n.heading}”) behaves like **{n.concept}**, so it "
+                    "was checked as that. Give it a clearer heading so a reader knows too.")
+        elif n.kind == "unknown":
+            st.caption(f"Column {n.letters[0]} (“{n.heading}”) wasn't recognised. If it's a "
+                       "helper column, that's fine; if it's one of the questions above, use a "
+                       "heading that says what it measures.")
+
+
+def show_feedback(key: str, res: checker.PieceResult, ps: dict) -> None:
+    problems = res.problem_items()
+    todo = res.todo_items()
+    carried = sum(c.status == "carried" for c in res.cells)
+    if problems:
+        st.subheader("What to work on")
+        order = {c.item: n for n, c in enumerate(res.cells)}
+        for item in sorted(problems, key=lambda it: order[it]):
+            cells = problems[item]
+            first = cells[0]
+            refs = ", ".join(c.ref for c in cells[:6]) + (" …" if len(cells) > 6 else "")
+            statuses = sorted({checker.STATUS_LABEL[c.status] for c in cells})
+            lvl = max(1, ps["help"].get(item, 1))
+            st.markdown(f"**{escape(item_name(key, item, res))}** — {', '.join(statuses)} in "
+                        f"{len(cells)} cell{'s' if len(cells) != 1 else ''}: {refs}")
+            extra = []
+            if any(c.status == "typed" for c in cells):
+                extra.append(checker.STATUS_HELP["typed"])
+            if any(c.status in ("error", "text", "uncalc") for c in cells):
+                extra.append(checker.STATUS_HELP[next(c.status for c in cells
+                                                      if c.status in ("error", "text", "uncalc"))])
+            if lvl >= 2 and first.diag:
+                extra.append(f"In {first.ref}: {first.diag}")
+            for e in extra:
+                st.caption(text.md(e))
+            if any(c.status == "wrong" for c in cells):
+                st.markdown(hint_block(key, item, lvl), unsafe_allow_html=True)
+    if carried:
+        st.caption(f"↪ {carried} more cell{'s' if carried != 1 else ''} only follow an earlier "
+                   "mistake: their formulas look right and should correct themselves once the "
+                   "cells above are fixed.")
+    if todo:
+        names = [f"{item_name(key, it, res)} ({len(cs)})" for it, cs in todo.items()]
+        st.markdown("**Still empty:** " + text.md(", ".join(names)))
+
+
+def page_piece(key: str) -> None:
+    header(key)
+    scn = scenario()
+    ps = SS["pieces"][key]
+    if not unlocked(key):
+        prev = PIECES[PIECES.index(key) - 1]
+        st.info(f"Submit the **{checker.PIECE_TITLES[prev]}** first — the pieces open one at a time.")
+        st.button(f"Go to {checker.PIECE_TITLES[prev]}", on_click=go, args=(prev,))
         return
-    res: checker.CheckResult = last["result"]
-    st.caption(f"Checked **{last['file']}** at {last['at']} · check #{len(SS['history'])}")
+    if ps["submitted"]:
+        sub = ps["submitted"]
+        n = len([a for a in ps["attempts"] if not a.get("fatal")])
+        st.success(f"✔ Submitted {sub['at']} after {n} upload{'s' if n != 1 else ''}.")
+        rec = piece_record(key)
+        pdf, rid = report.build_report(
+            scn, student_name=SS["student"]["name"], student_id=SS["student"]["sid"],
+            identity_label=identity.label, pieces=[rec], final=True,
+            heading=f"Receipt — {checker.PIECE_TITLES[key]} submitted",
+            comparison=sub.get("metrics") or None, feasibility=sub.get("feasibility") or None,
+            recommendation=sub.get("recommendation", ""),
+            justification=sub.get("justification") if key == "summary" else None,
+            words=sub.get("words", 0))
+        st.download_button("⬇ Download receipt (PDF)", pdf,
+                           file_name=report.report_file_name(SS["student"]["name"], key, rid),
+                           mime="application/pdf")
+        st.caption("Upload the receipt to your LMS if your instructor collects each piece.")
+        nav_buttons(key)
+        return
+
+    show_guidance(key, scn)
+    st.subheader("Upload & check")
+    st.write("Save your workbook in Excel, then upload it here. Only the "
+             f"**{checker.PIECE_TITLES[key].lower()}** is checked at this step.")
+    up = st.file_uploader("Your workbook (.xlsx)", type=["xlsx"], key=f"up_{key}")
+    if up is not None:
+        run_check(key, up)
+    res = SS["results"].get(key)
+    if res is None:
+        nav_buttons(key, next_disabled=True)
+        return
+    n = len([a for a in ps["attempts"] if not a.get("fatal")])
+    st.caption(f"Upload #{n} for this piece · {ps['attempts'][-1]['file']} · "
+               f"{ps['attempts'][-1]['at']}")
     if res.fatal:
         for msg in res.fatal:
             st.error(msg)
-        nav_buttons("check", next_disabled=True)
+        nav_buttons(key, next_disabled=True)
         return
     if res.uncalculated:
-        st.warning("**Some formulas have no saved results.** This happens when a file was "
-                   "never opened and saved in a spreadsheet program. Open it in Excel, save "
-                   "it as .xlsx, and upload again.")
+        st.warning("**Some formulas have no saved results.** Open the file in Excel, save it as "
+                   ".xlsx, and upload again.")
+    for msg in res.messages:
+        st.warning(msg)
+    c1, c2 = st.columns([1, 2])
+    c1.metric("Cells correct", f"{res.n_ok} / {res.n_total}")
+    c2.progress(res.n_ok / max(1, res.n_total))
+    if key != "summary":
+        show_columns(key, res, ps)
+    if res.feasibility:
+        st.markdown("**Does your hybrid plan respect every limit?**")
+        for chk in res.feasibility:
+            st.markdown(f"{'✔' if chk['ok'] else '✖'} **{chk['label']}** — {chk['detail']}")
+        others = {k: SS["pieces"][k]["submitted"]["metrics"][k]["Total Cost"]
+                  for k in ("chase", "level") if submitted(k)}
+        if "hybrid" in res.metrics and others:
+            mine = res.metrics["hybrid"]["Total Cost"]
+            st.caption(text.md(f"Your hybrid costs ${mine:,.0f} (if your formulas are right): "
+                               + " · ".join(f"{k} ${v:,.0f}" for k, v in others.items())))
+    show_feedback(key, res, ps)
+    if key != "summary" and not checker.grid(res).empty:
+        st.markdown("**Cell by cell** — same layout as your sheet; hover a cell for details")
+        legend()
+        st.markdown(grid_html(res), unsafe_allow_html=True)
+    elif key == "summary":
+        md_table(pd.DataFrame([{"Cell": c.ref, "Item": c.label,
+                                "Status": checker.STATUS_LABEL[c.status],
+                                "Your value": c.shown or "—"} for c in res.cells]))
+
     if res.complete:
-        st.success("🎉 **Everything checks out.** Every required cell is correct and calculated "
-                   "by a formula. Go on to **Submit**.")
-
-    cols = st.columns(len(res.sheets))
-    for c, s in zip(cols, res.sheets.values()):
-        with c:
-            with st.container(border=True):
-                if not s.attempted:
-                    st.markdown(f"**{s.title}**")
-                    st.caption("Optional · not started")
-                    continue
-                badge = "✔ " if s.complete else ""
-                st.markdown(f"**{badge}{s.title}**" + ("" if s.required else " *(optional)*"))
-                st.progress(s.n_ok / max(1, s.n_total))
-                st.caption(f"{s.n_ok} of {s.n_total} correct")
-
-    todo, carried = res.fix_first(8)
-    if todo or carried:
-        st.subheader("Fix these next")
-        for k, (c, more) in enumerate(todo, start=1):
-            extra = f" — and {more - 1} more like it in this column" if more > 1 else ""
-            st.markdown(f"**{k}. {c.sheet} · {c.ref}** ({c.label}) — "
-                        f"{checker.STATUS_LABEL[c.status]}{extra}  \n"
-                        f"<span style='opacity:.85'>{text.md(c.message)}</span>",
-                        unsafe_allow_html=True)
-        if carried:
-            st.caption(f"↪ {carried} other cell{'s' if carried != 1 else ''} only follow"
-                       f"{'' if carried != 1 else 's'} these mistakes: their formulas look right "
-                       "and should correct themselves once the cells above are fixed.")
-
-    st.subheader("Cell by cell")
-    legend()
-    shown = [s for s in res.sheets.values() if s.attempted]
-    tabs = st.tabs([s.title for s in shown])
-    for tab, s in zip(tabs, shown):
-        with tab:
-            for note in s.notes:
-                st.info(note)
-            if s.key == "summary":
-                cell_table(s.cells)
-                continue
-            plan = [c for c in s.cells if c.row_label == "Planning"]
-            if plan:
-                st.markdown("**Planning cells**")
-                cell_table(plan)
-            if any(c.row_label != "Planning" and c.sheet == s.title for c in s.cells):
-                st.markdown("**Monthly grid** — same layout as your sheet; hover a cell for "
-                            "its feedback")
-                st.markdown(grid_html(s), unsafe_allow_html=True)
-            bad = [c for c in s.cells if c.needs_work and c.row_label != "Planning"]
-            if bad:
-                with st.expander(f"Feedback for the {len(bad)} cells that need work"):
-                    cell_table(bad)
-            if s.key == "hybrid" and res.hybrid_feasibility:
-                st.markdown("**Is your hybrid plan feasible?**")
-                for chk in res.hybrid_feasibility:
-                    st.markdown(f"{'✔' if chk['ok'] else '✖'} **{chk['label']}** — {chk['detail']}")
-                if "hybrid" in res.plan_totals:
-                    t = {k: v["Total Cost"] for k, v in res.plan_totals.items()}
-                    st.caption("Total cost from your decisions: " + " · ".join(
-                        f"{k.title()} ${v:,.0f}" for k, v in t.items()).replace("$", "\\$"))
-    nav_buttons("check", "Next: submit →", next_disabled=not res.complete)
-    if not res.complete:
-        st.caption("Submit unlocks when every required cell is correct. You can still download a "
-                   "draft report on the Submit step.")
+        st.success(f"🎉 Your **{checker.PIECE_TITLES[key].lower()}** is complete and correct.")
+        if st.button(f"Submit the {checker.PIECE_TITLES[key].lower()}", type="primary"):
+            submit_piece(key, res)
+            st.rerun()
+    elif res.feasibility and not res.feasible and all(c.status == "ok" for c in res.graded):
+        st.info("Your formulas are all correct, but the plan breaks a limit. Change your "
+                "decisions (workers, regular production, overtime, subcontracting) and upload again.")
+    nav_buttons(key, next_disabled=True)
 
 
 # --------------------------------------------------------------------------- #
-# Step 4: submit
+# Final report
 # --------------------------------------------------------------------------- #
-def page_submit() -> None:
-    header("submit")
-    last = latest()
-    if not last or last["result"].fatal:
-        st.info("Upload your workbook on **Upload & check** first.")
-        nav_buttons("submit")
-        return
-    res: checker.CheckResult = last["result"]
+def page_report() -> None:
+    header("report")
     scn = scenario()
     stu = SS["student"]
-    if res.complete:
-        st.success("Your workbook is complete and correct.")
-        kinds = [k for k in ("chase", "level", "hybrid") if k in res.plan_totals
-                 and (k != "hybrid" or res.sheets["hybrid"].complete)]
-        rows = {}
-        for m in ("Total Cost", "Labor Cost", "Hiring Cost", "Layoff Cost", "Holding Cost",
-                  "Backorder Cost", "Total Hires", "Total Layoffs", "Peak Inventory",
-                  "Months With Backorders"):
-            rows[m] = [(f"${res.plan_totals[k][m]:,.0f}" if "Cost" in m
-                        else f"{res.plan_totals[k][m]:,.0f}") for k in kinds]
-        md_table(pd.DataFrame({"Measure": list(rows), **{k.title(): [rows[m][j] for m in rows]
-                                                        for j, k in enumerate(kinds)}}))
-        st.markdown(f"**Your recommendation:** {res.recommendation} · {res.words} words of "
-                    "justification")
+    recs = [piece_record(k) for k in PIECES]
+    md_table(pd.DataFrame([{"Piece": r["title"], "Status": r["status"],
+                            "Uploads": r["attempts"], "First attempt": r["first"] or "—",
+                            "Most help used": (f"{r['help']} · {hints.LEVEL_NAMES[r['help']]}"
+                                               if r["help"] else "none"),
+                            "Submitted": r["submitted_at"] or "—"} for r in recs]))
+    final = all(submitted(k) for k in PIECES)
+    summ = SS["pieces"]["summary"]["submitted"] or {}
+    if final:
+        st.success("Every piece is submitted. Download your final report and submit it with "
+                   "your workbook.")
     else:
-        st.warning("Your workbook isn't complete yet:\n\n" + "\n".join(f"- {m}" for m in res.missing()))
-        st.caption("You can download a DRAFT report to show your progress, but submit the final "
-                   "report once everything checks out.")
-
-    rep = SS.get("report")
-    label = "Create my check report (PDF)" if res.complete else "Create a DRAFT report (PDF)"
-    if st.button(label, type="primary" if res.complete else "secondary"):
-        pdf, attempt = report.build_report(res, scn, student_name=stu["name"],
-                                           student_id=stu["sid"], identity_label=identity.label,
-                                           file_name=last["file"])
-        rep = {"pdf": pdf, "attempt": attempt, "final": res.complete, "sha": res.sha256}
-        SS["report"] = rep
-        if res.complete and identity.recorded and store.enabled():
+        st.info("Not every piece is submitted yet. You can download a DRAFT report to show "
+                "your progress.")
+    if st.button("Create my final report (PDF)" if final else "Create a DRAFT report (PDF)",
+                 type="primary" if final else "secondary"):
+        hyb = SS["pieces"].get("hybrid", {}).get("submitted") or {}
+        pdf, rid = report.build_report(
+            scn, student_name=stu["name"], student_id=stu["sid"], identity_label=identity.label,
+            pieces=recs, final=final, heading="Final report" if final else "Progress report",
+            comparison=summ.get("metrics") or None, feasibility=hyb.get("feasibility") or None,
+            recommendation=summ.get("recommendation", ""),
+            justification=summ.get("justification") if summ else None,
+            words=summ.get("words", 0))
+        SS["final_pdf"] = {"pdf": pdf, "rid": rid, "final": final}
+        if final and identity.recorded and store.enabled():
             try:
-                store.record_completion(GAME, stu["sid"], completion_code=attempt, score=None,
-                                        extra={"workbook_sha256": res.sha256,
-                                               "seed": scn.seed, "config_hash": scn.config_hash,
-                                               "recommendation": res.recommendation,
-                                               "plan_costs": {k: v["Total Cost"] for k, v in
-                                                              res.plan_totals.items()}})
-                rep["recorded"] = True
+                store.record_completion(GAME, stu["sid"], completion_code=rid, score=None, extra={
+                    "seed": scn.seed, "config_hash": scn.config_hash,
+                    "recommendation": summ.get("recommendation"),
+                    "pieces": {k: {"uploads": r["attempts"], "help": r["help"],
+                                   "workbook_sha256": r["sha"]} for k, r in zip(PIECES, recs)},
+                    "plan_costs": {k: v["Total Cost"] for k, v in (summ.get("metrics") or {}).items()}})
+                SS["final_pdf"]["recorded"] = True
             except Exception as e:                                     # noqa: BLE001
-                rep["recorded"] = False
-                rep["record_error"] = type(e).__name__
-        st.rerun()                  # refresh the sidebar tick
-    if rep and rep.get("sha") == res.sha256:
-        st.download_button("⬇ Download report PDF", rep["pdf"],
-                           file_name=report.report_file_name(stu["name"], rep["attempt"]),
+                SS["final_pdf"]["recorded"] = type(e).__name__
+        st.rerun()
+    fp = SS.get("final_pdf")
+    if fp and fp["final"] == final:
+        st.download_button("⬇ Download report PDF", fp["pdf"],
+                           file_name=report.report_file_name(stu["name"], "final" if final
+                                                             else "draft", fp["rid"]),
                            mime="application/pdf", type="primary")
-        if rep.get("recorded"):
-            st.caption(f"Completion recorded (attempt {rep['attempt']}).")
-        elif rep.get("recorded") is False:
-            st.warning("The completion could not be recorded on the server "
-                       f"({rep.get('record_error')}). Your PDF is fine — submit it as usual.")
-        if rep["final"]:
-            st.markdown("#### Submit both files to your LMS")
-            st.markdown(f"1. **Your Excel workbook** — the same file you checked: `{last['file']}`  \n"
-                        f"2. **This report** — attempt `{rep['attempt']}`")
-            st.caption("The report records the workbook's fingerprint (SHA-256), so your "
-                       "instructor can confirm the two files belong together.")
-    nav_buttons("submit")
+        if fp.get("recorded") is True:
+            st.caption(f"Completion recorded (report {fp['rid']}).")
+        elif fp.get("recorded"):
+            st.warning(f"The completion could not be recorded on the server ({fp['recorded']}). "
+                       "Your PDF is fine — submit it as usual.")
+        if final:
+            st.markdown("#### Submit to your LMS\n1. **Your Excel workbook** (the version you "
+                        "submitted last)\n2. **This report**")
+    nav_buttons("report")
 
 
-PAGES = {"scenario": page_scenario, "build": page_build, "check": page_check,
-         "submit": page_submit}
 step = SS["step"]
-if step not in ("scenario", "check") and not SS["student"]:
-    step = SS["step"] = "scenario"
-PAGES[step]()
+if step not in STEP_KEYS or not unlocked(step):
+    step = SS["step"] = "start" if not SS["student"] else next(
+        (k for k in PIECES if not submitted(k)), "report")
+if step == "start":
+    page_start()
+elif step == "report":
+    page_report()
+else:
+    page_piece(step)

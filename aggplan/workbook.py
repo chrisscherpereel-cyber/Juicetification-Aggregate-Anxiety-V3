@@ -1,45 +1,46 @@
 """Build the student's personal Excel workbook.
 
 The workbook carries only GIVEN data (demand, parameters with Excel names) and empty,
-colour-coded cells. Every calculation is the student's own Excel formula. With
-`solution=True` the same layout is filled with reference formulas: that is the instructor
-answer key (tools/make_answer_key.py) and the end-to-end test fixture.
+colour-coded space. On each plan sheet the student designs the worksheet: they type their
+own column headings in row 1, their formulas for January–December below, and the yearly
+totals in row 14. Planning cells below the grid hold one-off calculations.
 
-Layout: see layout.py. Sheets are protected WITHOUT a password, only to stop accidental
-edits of the given data; the cells a student fills are unlocked."""
+With `solution=True` the same workbook is filled with headings and reference formulas:
+the instructor answer key (tools/make_answer_key.py) and the end-to-end test fixtures.
+`columns` lets a test put the columns in any order with any headings.
+
+Sheets are protected WITHOUT a password, only to stop accidental edits of the given data;
+every cell a student fills is unlocked."""
 
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
 import io
-from typing import Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook
-from openpyxl.chart import LineChart, Reference
 from openpyxl.comments import Comment
-from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from . import MODEL_VERSION, layout as L, text
+from . import MODEL_VERSION, hints, layout as L, text
 from .engine import Decision, reference_plan
 from .scenario import NAME_KEYS, Scenario
 
-SCHEMA = 1
+SCHEMA = 2
 APP_ID = "aggregate-anxiety-excel"
 
 # --- styles ----------------------------------------------------------------------------
 GIVEN_FONT = Font(color="1F4E9E")
 GIVEN_FILL = PatternFill("solid", fgColor="FFF2CC")       # given data: blue on light yellow
 INPUT_FILL = PatternFill("solid", fgColor="DDEBF7")       # your formulas: light blue
-DECIDE_FILL = PatternFill("solid", fgColor="E2EFDA")      # your decisions: light green
+HEADING_FILL = PatternFill("solid", fgColor="FCE4D6")     # your column headings: peach
 NA_FILL = PatternFill("solid", fgColor="EDEDED")
 HEAD_FILL = PatternFill("solid", fgColor="1F3864")
 HEAD_FONT = Font(bold=True, color="FFFFFF")
-SUB_FILL = PatternFill("solid", fgColor="D9E2F3")
 TOTAL_FILL = PatternFill("solid", fgColor="BDD7EE")
 BOLD = Font(bold=True)
 TITLE = Font(bold=True, size=16, color="1F3864")
@@ -51,9 +52,6 @@ BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 WRAP = Alignment(wrap_text=True, vertical="top")
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 UNLOCKED = Protection(locked=False)
-RED_FILL = PatternFill("solid", bgColor="FFC7CE")
-RED_FONT = Font(color="9C0006")
-AMBER_FILL = PatternFill("solid", bgColor="FFEB9C")
 
 
 def _put(ws, ref, value, *, font=None, fill=None, fmt=None, wrap=False, border=False,
@@ -78,12 +76,6 @@ def _put(ws, ref, value, *, font=None, fill=None, fmt=None, wrap=False, border=F
     return c
 
 
-def _formula(ws, ref, f):
-    """A real Excel formula (only ever our own text, never student input)."""
-    ws[ref].value = f
-    return ws[ref]
-
-
 def _input(ws, ref, fmt=None, fill=INPUT_FILL):
     c = ws[ref]
     c.fill, c.border, c.protection = fill, BOX, UNLOCKED
@@ -99,14 +91,12 @@ def _protect(ws):
     ws.protection.formatCells = False
 
 
-def _comment(t: str) -> Comment:
-    c = Comment(t, "Aggregate Anxiety")
-    c.width, c.height = 300, 120
-    return c
-
-
 def _sheet_ref(sheet: str) -> str:
     return f"'{sheet}'" if " " in sheet else sheet
+
+
+def _pieces(scn: Scenario) -> List[str]:
+    return ["chase", "level"] + (["hybrid"] if scn.params.get("include_hybrid", True) else [])
 
 
 # =========================================================================================
@@ -117,11 +107,11 @@ def _start_sheet(wb, scn: Scenario, name: str, sid: str):
     ws.title = L.SHEET_START
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = 3
-    ws.column_dimensions["B"].width = 26
-    ws.column_dimensions["C"].width = 62
-    ws.column_dimensions["D"].width = 62
+    ws.column_dimensions["B"].width = 24
+    ws.column_dimensions["C"].width = 60
+    ws.column_dimensions["D"].width = 60
     _put(ws, "B1", str(scn.params["assignment_name"]), font=TITLE)
-    _put(ws, "B2", "Juicetification Inc. — aggregate production planning, done in Excel.",
+    _put(ws, "B2", "Juicetification Inc. — aggregate production planning, built by you in Excel.",
          font=NOTE)
     _put(ws, "B4", "Student name", font=BOLD)
     _put(ws, L.START_NAME_CELL, name or "", border=True, fill=GIVEN_FILL, font=GIVEN_FONT)
@@ -130,67 +120,57 @@ def _start_sheet(wb, scn: Scenario, name: str, sid: str):
     _put(ws, "B6", "Scenario number", font=BOLD)
     _put(ws, "C6", scn.seed, border=True, fill=GIVEN_FILL, font=GIVEN_FONT, fmt="0",
          align=Alignment(horizontal="left"))
-    _put(ws, "D4", "This workbook was made for you. Your demand and numbers differ from "
-                   "your classmates', so upload only your own file.", font=NOTE, wrap=True)
+    _put(ws, "D4", "This workbook was made for you: your demand and numbers differ from your "
+                   "classmates'. Upload only your own file.", font=NOTE, wrap=True)
     ws.merge_cells("D4:D6")
 
     r = 8
-    _put(ws, f"B{r}", "What you will do", font=H2)
-    steps = [
-        ("1. Scenario", "Read your demand forecast and the given data. Every given number has "
-                        "an Excel NAME you can use in formulas (e.g. LaborCost)."),
-        ("2. Chase Plan", "Fill the planning cells (column S), then every blue cell for "
-                          "January–December, then the totals in row 14. Use formulas only."),
-        ("3. Level Plan", "Same as the chase plan, but production and workers are constant: "
-                          "work them out in the planning cells first (S2:S6)."),
-        ("4. Summary", "Link each plan's totals, find the cheaper plan with IF, then choose "
-                       "and justify your recommendation in your own words."),
-        ("5. Hybrid Plan", "Optional challenge: choose workers, overtime and subcontracting "
-                           "(green cells) and calculate the rest. Try to beat both plans."),
-        ("6. Check", "Save as .xlsx and upload it in the app. It tells you which cells to fix. "
-                     "Fix, save, upload again — as often as you like."),
-    ]
-    if not scn.params.get("include_hybrid", True):
-        steps = [s for s in steps if not s[0].startswith("5.")]
+    _put(ws, f"B{r}", "How this works", font=H2)
+    steps = [("Pieces", "You build and submit this workbook one piece at a time in the app: "
+                        "the chase plan, then the level plan"
+                        + (", then the hybrid plan" if "hybrid" in _pieces(scn) else "")
+                        + ", then the comparison on the Summary sheet."),
+             ("Design it", "On each plan sheet only Month and Demand are given. YOU decide "
+                           "which columns the plan needs: type a heading in row 1 for each one "
+                           "(peach cells), then the formulas for January–December below it, "
+                           "and the yearly totals in row 14."),
+             ("Plan first", "Fill the planning cells under the grid first — the one-off numbers "
+                            "the months will use."),
+             ("Use formulas", "Every number you work out must be an Excel formula (start with =). "
+                              "Use the names on the Scenario sheet, e.g. =…*LaborCost."),
+             ("Check", "Save as .xlsx and upload it at that piece's step in the app. You'll see "
+                       "which cells are right; each new attempt unlocks more help on what is "
+                       "still wrong. When a piece is all correct, submit it and move on.")]
     for k, (a, b) in enumerate(steps, start=r + 1):
         _put(ws, f"B{k}", a, font=BOLD, wrap=True)
         _put(ws, f"C{k}", b, wrap=True)
         ws.merge_cells(f"C{k}:D{k}")
+        ws.row_dimensions[k].height = 32           # Excel never auto-fits merged cells
     r = r + len(steps) + 2
 
     _put(ws, f"B{r}", "Colour key", font=H2)
     legend = [(GIVEN_FILL, "Given data — do not change"),
+              (HEADING_FILL, "Your column heading goes here (row 1)"),
               (INPUT_FILL, "Your formula goes here"),
-              (DECIDE_FILL, "Your decision (Hybrid Plan only)"),
-              (TOTAL_FILL, "Totals row — your SUM formula goes here")]
+              (TOTAL_FILL, "Yearly totals row (row 14)")]
     for k, (fill, label) in enumerate(legend, start=r + 1):
         _put(ws, f"B{k}", "", fill=fill, border=True)
         _put(ws, f"C{k}", label)
     r = r + len(legend) + 2
 
-    _put(ws, f"B{r}", "The rules of the model", font=H2)
+    _put(ws, f"B{r}", "Your company's policy", font=H2)
     _put(ws, f"B{r + 1}", text.target_sentence(scn), wrap=True)
     ws.merge_cells(f"B{r + 1}:D{r + 1}")
     ws.row_dimensions[r + 1].height = 32
-    r += 2
-    _put(ws, f"B{r}", "Column", font=HEAD_FONT, fill=HEAD_FILL)
-    _put(ws, f"C{r}", "Chase plan", font=HEAD_FONT, fill=HEAD_FILL)
-    _put(ws, f"D{r}", "Level plan (where different)", font=HEAD_FONT, fill=HEAD_FILL)
-    chase, level = text.column_rules("chase"), text.column_rules("level")
-    for col in L.PLAN_COLUMNS["chase"]:
-        if col.kind != "calc":
-            continue
-        r += 1
-        _put(ws, f"B{r}", col.heading, font=BOLD, border=True, wrap=True)
-        _put(ws, f"C{r}", chase[col.engine], border=True, wrap=True)
-        lv = level[col.engine]
-        _put(ws, f"D{r}", lv if lv != chase[col.engine] else "same", border=True, wrap=True)
-    r += 1
-    _put(ws, f"B{r}", "Row 14 totals", font=BOLD, border=True)
-    _put(ws, f"C{r}", text.TOTAL_RULE, border=True, wrap=True)
-    _put(ws, f"D{r}", "same", border=True)
-    r += 2
-    _put(ws, f"B{r}", "Stuck on Excel itself? See the Excel Help sheet.", font=NOTE)
+    r += 3
+    _put(ws, f"B{r}", "Questions every plan must answer, for each month", font=H2)
+    for k, q in enumerate(hints.build_questions("chase"), start=1):
+        _put(ws, f"B{r + k}", f"{k}.", align=Alignment(horizontal="right"))
+        _put(ws, f"C{r + k}", q)
+    r += len(hints.build_questions("chase")) + 2
+    _put(ws, f"B{r}", "Each question becomes a column. Which columns does each one depend on? "
+                      "That is your formula.", font=NOTE)
+    _put(ws, f"B{r + 1}", "Stuck on Excel itself? See the Excel Help sheet.", font=NOTE)
     _protect(ws)
 
 
@@ -207,18 +187,17 @@ def _scenario_sheet(wb, scn: Scenario):
         _put(ws, f"A{6 + i}", m, font=GIVEN_FONT, fill=GIVEN_FILL, border=True)
         _put(ws, f"B{6 + i}", float(d), font=GIVEN_FONT, fill=GIVEN_FILL, border=True,
              fmt="#,##0")
-
     _put(ws, "E4", "Given data and their Excel names", font=H2)
     for j, h in enumerate(["Given data", "Value", "Excel name", "Unit"]):
         _put(ws, f"{get_column_letter(5 + j)}5", h, font=HEAD_FONT, fill=HEAD_FILL,
              border=True)
     for i, (nm, key, meaning, unit) in enumerate(NAME_KEYS):
         r = 6 + i
-        v = scn.name_value(key)
         fmt = "0%" if key == "overtime_pct" else ("$#,##0.00" if unit.startswith("$")
                                                   else "#,##0")
         _put(ws, f"E{r}", meaning, border=True)
-        _put(ws, f"F{r}", v, font=GIVEN_FONT, fill=GIVEN_FILL, border=True, fmt=fmt)
+        _put(ws, f"F{r}", scn.name_value(key), font=GIVEN_FONT, fill=GIVEN_FILL, border=True,
+             fmt=fmt)
         _put(ws, f"G{r}", nm, font=CODE, border=True)
         _put(ws, f"H{r}", unit, border=True)
         wb.defined_names[nm] = DefinedName(nm, attr_text=f"{L.SHEET_SCENARIO}!$F${r}")
@@ -227,106 +206,69 @@ def _scenario_sheet(wb, scn: Scenario):
     _protect(ws)
 
 
+_PLAN_INTRO = {
+    "chase": "CHASE PLAN — change the workforce every month so production follows demand.",
+    "level": "LEVEL PLAN — one steady production rate and workforce all year.",
+    "hybrid": "HYBRID PLAN — your own strategy: choose workers, regular production, overtime "
+              "and subcontracting each month, then calculate the results.",
+}
+
+
 def _plan_sheet(wb, scn: Scenario, kind: str):
     ws = wb.create_sheet(L.PLAN_SHEETS[kind])
-    cols = L.PLAN_COLUMNS[kind]
-    rules = text.column_rules(kind)
     ws.row_dimensions[1].height = 48
-    for j, c in enumerate(cols):
-        letter = get_column_letter(j + 1)
-        _put(ws, f"{letter}1", c.heading, font=HEAD_FONT, fill=HEAD_FILL, border=True,
-             align=CENTER)
-        tip = f"{c.heading}\nUnit: {c.unit}" if c.unit else c.heading
-        if c.engine in rules and c.kind != "given":
-            tip += f"\n\n{rules[c.engine]}"
-        ws[f"{letter}1"].comment = _comment(tip)
-        ws.column_dimensions[letter].width = 13 if j else 11
+    _put(ws, "A1", "Month", font=HEAD_FONT, fill=HEAD_FILL, border=True, align=CENTER)
+    _put(ws, "B1", "Demand", font=HEAD_FONT, fill=HEAD_FILL, border=True, align=CENTER)
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 12
+    ws["C1"].comment = Comment("Type your first column heading here, then continue to the right. "
+                               "One column for each question your plan must answer.",
+                               "Aggregate Anxiety")
+    for j in range(L.FIRST_STUDENT_COL, L.LAST_STUDENT_COL + 1):
+        letter = get_column_letter(j)
+        ws.column_dimensions[letter].width = 13
+        h = _input(ws, f"{letter}1", fill=HEADING_FILL)
+        h.alignment, h.font = CENTER, BOLD
         for i in range(L.N_MONTHS):
-            r = L.month_row(i)
-            if j == 0:
-                _put(ws, f"A{r}", scn.months[i], font=GIVEN_FONT, fill=GIVEN_FILL, border=True)
-            elif j == 1:
-                _put(ws, f"B{r}", float(scn.demand[i]), font=GIVEN_FONT, fill=GIVEN_FILL,
-                     border=True, fmt="#,##0")
-            else:
-                _input(ws, f"{letter}{r}", c.fmt,
-                       DECIDE_FILL if c.kind == "decision" else INPUT_FILL)
-        tr = L.TOTAL_ROW
-        if j == 0:
-            _put(ws, f"A{tr}", "Total", font=BOLD, fill=TOTAL_FILL, border=True)
-        elif c.total:
-            _input(ws, f"{letter}{tr}", c.fmt, TOTAL_FILL)
-            ws[f"{letter}{tr}"].font = BOLD
-        else:
-            _put(ws, f"{letter}{tr}", None, fill=NA_FILL, border=True)
+            _input(ws, f"{letter}{L.month_row(i)}", "#,##0.##")
+        _input(ws, f"{letter}{L.TOTAL_ROW}", "#,##0.##", TOTAL_FILL).font = BOLD
+    for i in range(L.N_MONTHS):
+        r = L.month_row(i)
+        _put(ws, f"A{r}", scn.months[i], font=GIVEN_FONT, fill=GIVEN_FILL, border=True)
+        _put(ws, f"B{r}", float(scn.demand[i]), font=GIVEN_FONT, fill=GIVEN_FILL, border=True,
+             fmt="#,##0")
+    _put(ws, f"A{L.TOTAL_ROW}", "Year total", font=BOLD, fill=TOTAL_FILL, border=True)
+    _put(ws, f"B{L.TOTAL_ROW}", None, fill=NA_FILL, border=True)
     ws.freeze_panes = "C2"
 
-    # planning block
-    lcol, vcol, cells = L.PLANNING[kind]
-    ws.column_dimensions[lcol].width = 52
-    ws.column_dimensions[vcol].width = 14
-    _put(ws, f"{lcol}1", "Planning calculations", font=HEAD_FONT, fill=HEAD_FILL, border=True,
-         align=CENTER)
-    _put(ws, f"{vcol}1", "Your formula", font=HEAD_FONT, fill=HEAD_FILL, border=True,
-         align=CENTER)
-    for i, pc in enumerate(cells):
-        r = L.FIRST_ROW + i
-        _put(ws, f"{lcol}{r}", f"{pc.label} ({pc.unit})", border=True)
-        _input(ws, f"{vcol}{r}", "#,##0.##")
-        ws[f"{vcol}{r}"].comment = _comment(f"{pc.label}\n\n{text.PLANNING_RULES[pc.key]}")
-    r = L.FIRST_ROW + len(cells) + 1
-    tips = {
-        "chase": ["Tip: every month uses the SAME capacity cell, so lock it: $S$2.",
-                  "Do January first (it uses BeginInv and StartWorkers),",
-                  "then February, then fill February down to December."],
-        "level": ["Tip: every month uses the SAME level production and workforce:",
-                  "=$S$5 and =$S$6 (the $ signs keep them fixed when you fill down).",
-                  "Hires and Layoffs happen only in January."],
-        "hybrid": ["Green cells are YOUR decisions (type numbers or formulas).",
-                   "Everything else is calculated, exactly like the other plans.",
-                   "Limits: overtime ≤ OTLimitPct of regular capacity and only once regular",
-                   "capacity is full; subcontracting ≤ SubCapacity; inventory ≤ MaxInventory;",
-                   "no backorders left in December; December inventory ≥ EndTarget."],
-    }[kind]
-    for k, t in enumerate(tips):
-        _put(ws, f"{lcol}{r + k}", t, font=NOTE)
-
-    # conditional formatting: backorders red, inventory over storage amber
-    bl = L.col_letter(kind, "Ending Backorders")
-    il = L.col_letter(kind, "Ending Inventory")
-    ws.conditional_formatting.add(
-        f"{bl}{L.FIRST_ROW}:{bl}{L.LAST_ROW}",
-        CellIsRule(operator="greaterThan", formula=["0"], fill=RED_FILL, font=RED_FONT))
-    ws.conditional_formatting.add(
-        f"{il}{L.FIRST_ROW}:{il}{L.LAST_ROW}",
-        FormulaRule(formula=[f"AND(ISNUMBER({il}{L.FIRST_ROW}),{il}{L.FIRST_ROW}>MaxInventory)"],
-                    fill=AMBER_FILL))
-    leg = r + len(tips) + 1
-    _put(ws, f"{lcol}{leg}", "Red backorders = customers waiting. Amber inventory = over "
-                             "storage capacity.", font=NOTE)
-
-    # chart: demand vs production
-    pl = L.col_letter(kind, "Total Production" if kind == "hybrid" else "Regular Production")
-    ch = LineChart()
-    ch.title = "Demand vs. production"
-    ch.y_axis.title = "bottles"
-    ch.height, ch.width = 7.5, 16
-    for letter in ("B", pl):
-        idx = ord(letter) - 64
-        ch.add_data(Reference(ws, min_col=idx, min_row=1, max_row=L.LAST_ROW), titles_from_data=True)
-    ch.set_categories(Reference(ws, min_col=1, min_row=L.FIRST_ROW, max_row=L.LAST_ROW))
-    ws.add_chart(ch, f"A{L.TOTAL_ROW + 3}")
+    p0 = L.PLANNING_FIRST_ROW
+    _put(ws, f"A{p0 - 1}", "Planning calculations — do these first", font=H2)
+    for i, pc in enumerate(L.PLANNING[kind]):
+        r = p0 + i
+        _put(ws, f"A{r}", f"{pc.label} ({pc.unit})", border=True, wrap=True)
+        ws.merge_cells(f"A{r}:B{r}")
+        _input(ws, L.planning_ref(kind, pc.key), "#,##0.##")
+        ws.row_dimensions[r].height = 30
+    r = p0 + len(L.PLANNING[kind]) + 1
+    _put(ws, f"A{r}", _PLAN_INTRO[kind], font=BOLD)
+    _put(ws, f"A{r + 1}", "Row 1: your headings. Rows 2–13: your formulas for January–December. "
+                          "Row 14: yearly totals. Add helper columns if they help you think.",
+         font=NOTE)
+    if kind == "hybrid":
+        _put(ws, f"A{r + 2}", "Limits: overtime only once regular capacity is full and at most "
+                              "OTLimitPct of it; subcontracting at most SubCapacity; inventory at "
+                              "most MaxInventory; no backorders left in December; December "
+                              "inventory at least EndTarget.", font=NOTE)
     _protect(ws)
-    return ws
 
 
-def _summary_sheet(wb, scn: Scenario, include_hybrid: bool):
+def _summary_sheet(wb, scn: Scenario):
+    include_hybrid = "hybrid" in _pieces(scn)
     ws = wb.create_sheet(L.SHEET_SUMMARY)
     ws.sheet_view.showGridLines = False
     _put(ws, "A1", "Summary: compare the plans and recommend one", font=TITLE)
     h = L.SUMMARY_HEAD_ROW
-    heads = ["Measure", "Chase", "Level", "Hybrid (optional)" if include_hybrid else "",
-             "How to calculate it"]
+    heads = ["Measure", "Chase", "Level", "Hybrid" if include_hybrid else "", "Where it comes from"]
     for j, t in enumerate(heads):
         if t:
             _put(ws, f"{get_column_letter(j + 1)}{h}", t, font=HEAD_FONT, fill=HEAD_FILL,
@@ -346,16 +288,14 @@ def _summary_sheet(wb, scn: Scenario, include_hybrid: bool):
                 if bold:
                     ws[f"{letter}{r}"].font = bold
         _put(ws, f"E{r}", row.hint, font=NOTE)
-    lc = L.LOWER_COST_CELL
-    r = int(lc[1:])
+    r = int(L.LOWER_COST_CELL[1:])
     _put(ws, f"A{r}", "Lower-cost plan: Chase or Level?", font=BOLD, border=True)
-    _input(ws, lc)
-    _put(ws, f"E{r}", text.SUMMARY_RULES["lower"], font=NOTE)
+    _input(ws, L.LOWER_COST_CELL)
+    _put(ws, f"E{r}", "let Excel decide with a formula", font=NOTE)
     r = int(L.SAVINGS_CELL[1:])
     _put(ws, f"A{r}", "Savings of the lower-cost plan ($)", font=BOLD, border=True)
     _input(ws, L.SAVINGS_CELL, "$#,##0.00")
-    _put(ws, f"E{r}", text.SUMMARY_RULES["savings"], font=NOTE)
-
+    _put(ws, f"E{r}", "a positive number", font=NOTE)
     r = int(L.RECOMMEND_CELL[1:])
     _put(ws, f"A{r}", "Your recommendation", font=BOLD, border=True)
     _input(ws, L.RECOMMEND_CELL)
@@ -364,7 +304,7 @@ def _summary_sheet(wb, scn: Scenario, include_hybrid: bool):
                         prompt="Pick the plan you recommend", promptTitle="Recommendation")
     ws.add_data_validation(dv)
     dv.add(L.RECOMMEND_CELL)
-    _put(ws, f"E{r}", "Pick from the drop-down list.", font=NOTE)
+    _put(ws, f"E{r}", "pick from the drop-down list", font=NOTE)
     r = int(L.JUSTIFY_CELL[1:])
     _put(ws, f"A{r}", "Why? Justify it in your own words.", font=BOLD, border=True, wrap=True)
     words = int(scn.params.get("min_justification_words", 0) or 0)
@@ -372,11 +312,9 @@ def _summary_sheet(wb, scn: Scenario, include_hybrid: bool):
          + "Use your numbers: cost, workforce changes, inventory, backorders, and the risks "
            "your plan takes.", font=NOTE, wrap=True)
     ws.merge_cells(f"A{r + 1}:A{r + 5}")
-    rng = f"{L.JUSTIFY_CELL}:E{L.JUSTIFY_LAST_ROW}"
-    ws.merge_cells(rng)
-    c = _input(ws, L.JUSTIFY_CELL)
-    c.alignment = WRAP
-    for col, w in zip("ABCDE", [40, 17, 17, 19, 52]):
+    ws.merge_cells(f"{L.JUSTIFY_CELL}:E{L.JUSTIFY_LAST_ROW}")
+    _input(ws, L.JUSTIFY_CELL).alignment = WRAP
+    for col, w in zip("ABCDE", [40, 17, 17, 17, 40]):
         ws.column_dimensions[col].width = w
     _protect(ws)
 
@@ -397,7 +335,7 @@ def _help_sheet(wb):
         ws.merge_cells(f"B{r}:C{r}")
         ws.row_dimensions[r].height = 45
     r += 2
-    _put(ws, f"A{r}", "Functions you will use", font=H2)
+    _put(ws, f"A{r}", "Functions you may need", font=H2)
     for fn, ex, d in text.EXCEL_FUNCTIONS:
         r += 1
         _put(ws, f"A{r}", fn, font=BOLD)
@@ -413,9 +351,9 @@ def _help_sheet(wb):
         ws.row_dimensions[r].height = 30
     r += 2
     _put(ws, f"A{r}", "Practice: absolute references", font=H2)
-    _put(ws, f"A{r + 1}", "Holding cost = bottles × the ONE rate in B" + str(r + 3)
-         + ". Type a formula in C" + str(r + 4) + " and fill it down. Without a $ sign, "
-         "the rows below show 0 — that is the lesson.", wrap=True)
+    _put(ws, f"A{r + 1}", f"Cost = bottles × the ONE rate in B{r + 3}. Type a formula in "
+                          f"C{r + 4} and fill it down. Without a $ sign the rows below show 0 "
+                          "— that is the lesson.", wrap=True)
     ws.merge_cells(f"A{r + 1}:C{r + 1}")
     ws.row_dimensions[r + 1].height = 32
     _put(ws, f"A{r + 3}", "Rate ($/bottle)", font=BOLD)
@@ -437,103 +375,123 @@ def _meta_sheet(wb, scn: Scenario, name: str, sid: str, game: Optional[str]):
             ("workbook_id", wid)]
     for i, (k, v) in enumerate(rows, start=1):
         _put(ws, f"A{i}", k)
-        _put(ws, f"B{i}", v if not isinstance(v, str) else str(v))
+        _put(ws, f"B{i}", v)
     ws.sheet_state = "veryHidden"
     _protect(ws)
 
 
 # =========================================================================================
-# Answer key formulas
+# Answer key
 # =========================================================================================
-def _fill_solution(wb, scn: Scenario, hybrid: Optional[Decision], include_hybrid: bool):
-    for kind in ("chase", "level") + (("hybrid",) if hybrid is not None else ()):
-        ws = wb[L.PLAN_SHEETS[kind]]
-        c = lambda name: L.col_letter(kind, name)              # noqa: E731
-        if kind != "hybrid":
-            _formula(ws, L.planning_ref(kind, "capacity"), "=BottlesPerHour*HoursPerDay*DaysPerMonth")
-            _formula(ws, L.planning_ref(kind, "target"), "=EndTarget")
-        else:
-            _formula(ws, L.planning_ref(kind, "capacity"), "=BottlesPerHour*HoursPerDay*DaysPerMonth")
-            _formula(ws, L.planning_ref(kind, "ot_limit"), f"={L.planning_ref(kind, 'capacity')}*OTLimitPct")
-        if kind == "level":
-            _formula(ws, L.planning_ref(kind, "total_demand"), "=SUM(B2:B13)")
-            _formula(ws, L.planning_ref(kind, "level_rate"), "=(S4+S3-BeginInv)/12")
-            _formula(ws, L.planning_ref(kind, "level_workers"), "=ROUNDUP(S5/S2,0)")
-        for i in range(L.N_MONTHS):
-            r, p = L.month_row(i), L.month_row(i) - 1
-            prod = c("Total Production") if kind == "hybrid" else c("Regular Production")
-            f = {}
-            f["Beginning Inventory"] = "=BeginInv" if i == 0 else f"={c('Ending Inventory')}{p}"
-            f["Beginning Backorders"] = "=0" if i == 0 else f"={c('Ending Backorders')}{p}"
-            w, wp = f"{c('Workers')}{r}", ("StartWorkers" if i == 0 else f"{c('Workers')}{p}")
-            if kind == "chase":
-                f["Regular Production"] = f"=MAX(0,B{r}+$S$3-C{r}+D{r})"
-                f["Workers"] = f"=ROUNDUP(E{r}/$S$2,0)"
-            elif kind == "level":
-                f["Regular Production"] = "=$S$5"
-                f["Workers"] = "=$S$6"
-            else:
-                f["Workers"] = hybrid.workers[i]
-                f["Regular Production"] = hybrid.regular[i]
-                f["Overtime Production"] = hybrid.overtime[i] if hybrid.overtime else 0
-                f["Subcontract Production"] = hybrid.subcontract[i] if hybrid.subcontract else 0
-                f["Regular Capacity"] = f"={w}*$Y$2"
-                f["Total Production"] = (f"={c('Regular Production')}{r}+"
-                                         f"{c('Overtime Production')}{r}+"
-                                         f"{c('Subcontract Production')}{r}")
-                f["Overtime Cost"] = f"={c('Overtime Production')}{r}*OTCost"
-                f["Subcontract Cost"] = f"={c('Subcontract Production')}{r}*SubCost"
-            f["Hires"] = f"=MAX(0,{w}-{wp})"
-            f["Layoffs"] = f"=MAX(0,{wp}-{w})"
-            f["Ending Inventory"] = f"=MAX(0,C{r}+{prod}{r}-D{r}-B{r})"
-            f["Ending Backorders"] = f"=MAX(0,B{r}+D{r}-C{r}-{prod}{r})"
-            f["Labor Cost"] = f"={w}*LaborCost"
-            f["Hiring Cost"] = f"={c('Hires')}{r}*HireCost"
-            f["Layoff Cost"] = f"={c('Layoffs')}{r}*LayoffCost"
-            f["Holding Cost"] = f"={c('Ending Inventory')}{r}*HoldCost"
-            f["Backorder Cost"] = f"={c('Ending Backorders')}{r}*BackorderCost"
-            f["Total Cost"] = f"=SUM({c('Labor Cost')}{r}:{c('Backorder Cost')}{r})"
-            for name, v in f.items():
-                ws[f"{c(name)}{r}"].value = v
-        for col in L.PLAN_COLUMNS[kind]:
-            if col.total:
-                x = c(col.engine)
-                _formula(ws, f"{x}{L.TOTAL_ROW}", f"=SUM({x}{L.FIRST_ROW}:{x}{L.LAST_ROW})")
+ColumnSpec = Sequence[Tuple[str, str]]          # [(concept, heading)] in column order
 
+
+def default_columns(kind: str) -> List[Tuple[str, str]]:
+    order = L.REQUIRED[kind]
+    if kind == "hybrid":
+        order = ["Beginning Inventory", "Beginning Backorders", "Workers", "Regular Capacity",
+                 "Regular Production", "Overtime Production", "Subcontract Production",
+                 "Total Production", "Hires", "Layoffs", "Ending Inventory",
+                 "Ending Backorders", "Labor Cost", "Hiring Cost", "Layoff Cost",
+                 "Overtime Cost", "Subcontract Cost", "Holding Cost", "Backorder Cost",
+                 "Total Cost"]
+    return [(c, L.heading_for(kind, c)) for c in order]
+
+
+def _fill_plan(ws, scn: Scenario, kind: str, columns: ColumnSpec, hybrid: Optional[Decision]):
+    col = {c: get_column_letter(L.FIRST_STUDENT_COL + j) for j, (c, _) in enumerate(columns)}
+    for j, (_, heading) in enumerate(columns):
+        ws.cell(row=1, column=L.FIRST_STUDENT_COL + j).value = heading
+    cap = "$C$" + L.planning_ref(kind, "capacity")[1:]
+    ws[L.planning_ref(kind, "capacity")] = "=BottlesPerHour*HoursPerDay*DaysPerMonth"
+    if kind in ("chase", "level"):
+        ws[L.planning_ref(kind, "target")] = "=EndTarget"
+    if kind == "level":
+        td, tg, lr = (L.planning_ref(kind, k) for k in ("total_demand", "target", "level_rate"))
+        ws[td] = "=SUM(B2:B13)"
+        ws[lr] = f"=({td}+{tg}-BeginInv)/12"
+        ws[L.planning_ref(kind, "level_workers")] = f"=ROUNDUP({lr}/{L.planning_ref(kind, 'capacity')},0)"
+    if kind == "hybrid":
+        ws[L.planning_ref(kind, "ot_limit")] = f"={L.planning_ref(kind, 'capacity')}*OTLimitPct"
+    absref = lambda ref: f"${ref[0]}${ref[1:]}"                          # noqa: E731
+    prod = col.get("Total Production") if kind == "hybrid" else col["Regular Production"]
+    for i in range(L.N_MONTHS):
+        r, p = L.month_row(i), L.month_row(i) - 1
+        g = lambda c: f"{col[c]}{r}"                                       # noqa: E731
+        f: Dict[str, object] = {}
+        f["Beginning Inventory"] = "=BeginInv" if i == 0 else f"={col['Ending Inventory']}{p}"
+        f["Beginning Backorders"] = "=0" if i == 0 else f"={col['Ending Backorders']}{p}"
+        wprev = "StartWorkers" if i == 0 else f"{col['Workers']}{p}"
+        if kind == "chase":
+            f["Regular Production"] = (f"=MAX(0,B{r}+{absref(L.planning_ref(kind, 'target'))}"
+                                       f"-{g('Beginning Inventory')}+{g('Beginning Backorders')})")
+            f["Workers"] = f"=ROUNDUP({g('Regular Production')}/{cap},0)"
+        elif kind == "level":
+            f["Regular Production"] = f"={absref(L.planning_ref(kind, 'level_rate'))}"
+            f["Workers"] = f"={absref(L.planning_ref(kind, 'level_workers'))}"
+        else:
+            f["Workers"] = hybrid.workers[i]
+            f["Regular Production"] = hybrid.regular[i]
+            f["Overtime Production"] = hybrid.overtime[i] if hybrid.overtime else 0
+            f["Subcontract Production"] = hybrid.subcontract[i] if hybrid.subcontract else 0
+            f["Total Production"] = (f"={g('Regular Production')}+{g('Overtime Production')}"
+                                     f"+{g('Subcontract Production')}")
+            f["Overtime Cost"] = f"={g('Overtime Production')}*OTCost"
+            f["Subcontract Cost"] = f"={g('Subcontract Production')}*SubCost"
+        if "Regular Capacity" in col:
+            f["Regular Capacity"] = f"={g('Workers')}*{cap}"
+        f["Hires"] = f"=MAX(0,{g('Workers')}-{wprev})"
+        f["Layoffs"] = f"=MAX(0,{wprev}-{g('Workers')})"
+        f["Ending Inventory"] = (f"=MAX(0,{g('Beginning Inventory')}+{prod}{r}"
+                                 f"-{g('Beginning Backorders')}-B{r})")
+        f["Ending Backorders"] = (f"=MAX(0,B{r}+{g('Beginning Backorders')}"
+                                  f"-{g('Beginning Inventory')}-{prod}{r})")
+        f["Labor Cost"] = f"={g('Workers')}*LaborCost"
+        f["Hiring Cost"] = f"={g('Hires')}*HireCost"
+        f["Layoff Cost"] = f"={g('Layoffs')}*LayoffCost"
+        f["Holding Cost"] = f"={g('Ending Inventory')}*HoldCost"
+        f["Backorder Cost"] = f"={g('Ending Backorders')}*BackorderCost"
+        costs = [c for c in L.COST_CONCEPTS if c != "Total Cost" and c in col]
+        f["Total Cost"] = "=" + "+".join(g(c) for c in costs)
+        for concept, v in f.items():
+            if concept in col:
+                ws[g(concept)].value = v
+    for concept in col:
+        if concept in L.COST_CONCEPTS or concept in L.TOTAL_OPTIONAL:
+            x = col[concept]
+            ws[f"{x}{L.TOTAL_ROW}"].value = f"=SUM({x}{L.FIRST_ROW}:{x}{L.LAST_ROW})"
+    return col
+
+
+def _fill_summary(wb, scn: Scenario, letters: Dict[str, Dict[str, str]]):
     ws = wb[L.SHEET_SUMMARY]
-    for kind, letter in L.SUMMARY_PLAN_COL.items():
-        if kind == "hybrid" and hybrid is None:
-            continue
+    for kind, col in letters.items():
         sh = _sheet_ref(L.PLAN_SHEETS[kind])
+        letter = L.SUMMARY_PLAN_COL[kind]
         for row in L.SUMMARY_ROWS:
             if row.hybrid_only and kind != "hybrid":
                 continue
-            r = L.summary_row(row.metric)
-            if row.metric == "Total Hires":
-                f = f"={sh}!{L.total_ref(kind, 'Hires')}"
-            elif row.metric == "Total Layoffs":
-                f = f"={sh}!{L.total_ref(kind, 'Layoffs')}"
-            elif row.metric == "Peak Workforce":
-                x = L.col_letter(kind, "Workers")
-                f = f"=MAX({sh}!{x}2:{x}13)"
+            src = {"Total Hires": "Hires", "Total Layoffs": "Layoffs"}.get(row.metric, row.metric)
+            if row.metric == "Peak Workforce":
+                f = f"=MAX({sh}!{col['Workers']}2:{col['Workers']}13)"
             elif row.metric == "Peak Inventory":
-                x = L.col_letter(kind, "Ending Inventory")
+                x = col["Ending Inventory"]
                 f = f"=MAX({sh}!{x}2:{x}13)"
             elif row.metric == "Months With Backorders":
-                x = L.col_letter(kind, "Ending Backorders")
+                x = col["Ending Backorders"]
                 f = f'=COUNTIF({sh}!{x}2:{x}13,">0")'
             else:
-                f = f"={sh}!{L.total_ref(kind, row.metric)}"
-            _formula(ws, f"{letter}{r}", f)
+                f = f"={sh}!{col[src]}{L.TOTAL_ROW}"
+            ws[f"{letter}{L.summary_row(row.metric)}"] = f
     tc = L.summary_row("Total Cost")
-    _formula(ws, L.LOWER_COST_CELL, f'=IF(B{tc}<C{tc},"Chase","Level")')
-    _formula(ws, L.SAVINGS_CELL, f"=ABS(B{tc}-C{tc})")
+    ws[L.LOWER_COST_CELL] = f'=IF(B{tc}<C{tc},"Chase","Level")'
+    ws[L.SAVINGS_CELL] = f"=ABS(B{tc}-C{tc})"
     chase_cost = reference_plan(scn, "chase")["Total Cost"].sum()
     level_cost = reference_plan(scn, "level")["Total Cost"].sum()
-    ws[L.RECOMMEND_CELL].value = "Chase" if chase_cost <= level_cost else "Level"
-    ws[L.JUSTIFY_CELL].value = (
-        "ANSWER KEY. The recommendation and its justification are the student's own "
-        "judgement and are graded by the instructor, not by the checker. " * 3).strip()
+    ws[L.RECOMMEND_CELL] = "Chase" if chase_cost <= level_cost else "Level"
+    ws[L.JUSTIFY_CELL] = ("ANSWER KEY. The recommendation and its justification are the "
+                          "student's own judgement and are graded by the instructor, not by "
+                          "the checker. " * 3).strip()
 
 
 # =========================================================================================
@@ -541,20 +499,25 @@ def _fill_solution(wb, scn: Scenario, hybrid: Optional[Decision], include_hybrid
 # =========================================================================================
 def build_workbook(scn: Scenario, *, student_name: str = "", student_id: str = "",
                    game: Optional[str] = None, solution: bool = False,
-                   hybrid_decision: Optional[Decision] = None) -> bytes:
-    include_hybrid = bool(scn.params.get("include_hybrid", True))
+                   hybrid_decision: Optional[Decision] = None,
+                   columns: Optional[Dict[str, ColumnSpec]] = None) -> bytes:
+    pieces = _pieces(scn)
     wb = Workbook()
     _start_sheet(wb, scn, student_name, student_id)
     _scenario_sheet(wb, scn)
-    _plan_sheet(wb, scn, "chase")
-    _plan_sheet(wb, scn, "level")
-    if include_hybrid:
-        _plan_sheet(wb, scn, "hybrid")
-    _summary_sheet(wb, scn, include_hybrid)
+    for kind in pieces:
+        _plan_sheet(wb, scn, kind)
+    _summary_sheet(wb, scn)
     _help_sheet(wb)
     _meta_sheet(wb, scn, student_name, student_id, game)
     if solution:
-        _fill_solution(wb, scn, hybrid_decision if include_hybrid else None, include_hybrid)
+        letters = {}
+        for kind in pieces:
+            if kind == "hybrid" and hybrid_decision is None:
+                continue
+            spec = (columns or {}).get(kind) or default_columns(kind)
+            letters[kind] = _fill_plan(wb[L.PLAN_SHEETS[kind]], scn, kind, spec, hybrid_decision)
+        _fill_summary(wb, scn, letters)
     wb.active = 0
     bio = io.BytesIO()
     wb.save(bio)

@@ -60,96 +60,30 @@ def target_sentence(scn: Scenario) -> str:
             "aims to end December at 0.")
 
 
-# Rule for each calculated column (in words, using the Excel names). Shown as cell comments
-# in the workbook, on the Start Here sheet, in the app guide and in the checker feedback.
-def column_rules(kind: str) -> Dict[str, str]:
-    prod = {
-        "chase": "MAX(0, Demand + EndTarget − Beginning Inventory + Beginning Backorders): "
-                 "make exactly what this month needs.",
-        "level": "the level production per month from your planning cell (same every month).",
-        "hybrid": "your decision.",
-    }[kind]
-    workers = {
-        "chase": "ROUNDUP(Production ÷ capacity per worker, 0): whole workers, so round UP.",
-        "level": "the level workforce from your planning cell (same every month).",
-        "hybrid": "your decision (whole workers).",
-    }[kind]
-    total_prod = "Regular + Overtime + Subcontract production." if kind == "hybrid" else ""
-    rules = {
-        "Beginning Inventory": "January = BeginInv. Later months = last month's Ending Inventory.",
-        "Beginning Backorders": "January = 0. Later months = last month's Ending Backorders.",
-        "Regular Production": prod,
-        "Workers": workers,
-        "Regular Capacity": "Workers × capacity per worker.",
-        "Total Production": total_prod,
-        "Hires": "MAX(0, Workers − last month's Workers). January compares with StartWorkers.",
-        "Layoffs": "MAX(0, last month's Workers − Workers). January compares with StartWorkers.",
-        "Ending Inventory": "MAX(0, Beginning Inventory + Production − Beginning Backorders − "
-                            "Demand). Inventory is never negative.",
-        "Ending Backorders": "MAX(0, Demand + Beginning Backorders − Beginning Inventory − "
-                             "Production). Unfilled orders carried to next month.",
-        "Labor Cost": "Workers × LaborCost (workers are paid whether or not they are busy).",
-        "Hiring Cost": "Hires × HireCost.",
-        "Layoff Cost": "Layoffs × LayoffCost.",
-        "Overtime Cost": "Overtime Production × OTCost.",
-        "Subcontract Cost": "Subcontract Production × SubCost.",
-        "Holding Cost": "Ending Inventory × HoldCost.",
-        "Backorder Cost": "Ending Backorders × BackorderCost.",
-        "Total Cost": ("Labor + Hiring + Layoff + Overtime + Subcontract + Holding + Backorder."
-                       if kind == "hybrid" else "Labor + Hiring + Layoff + Holding + Backorder."),
-    }
-    if kind == "hybrid":
-        rules["Total Production"] = total_prod
-        rules["Ending Inventory"] = rules["Ending Inventory"].replace("Production", "Total Production")
-        rules["Ending Backorders"] = rules["Ending Backorders"].replace("Production", "Total Production")
-    return rules
-
-
-PLANNING_RULES = {
-    "capacity": "BottlesPerHour × HoursPerDay × DaysPerMonth.",
-    "target": "=EndTarget (the inventory each month should end with).",
-    "total_demand": "SUM of the twelve Demand cells.",
-    "level_rate": "(Total demand + ending inventory target − BeginInv) ÷ 12.",
-    "level_workers": "ROUNDUP(Level production ÷ capacity per worker, 0).",
-    "ot_limit": "Capacity per worker × OTLimitPct.",
-}
-
-TOTAL_RULE = "SUM of the twelve monthly values above it (row 14)."
-
-SUMMARY_RULES = {
-    "link": "Link to the matching total on the plan sheet, e.g. ='Chase Plan'!P14.",
-    "Peak Workforce": "MAX of the plan's Workers column.",
-    "Peak Inventory": "MAX of the plan's Ending Inventory column.",
-    "Months With Backorders": 'COUNTIF of the Ending Backorders column, criteria ">0".',
-    "lower": 'IF(chase total cost < level total cost, "Chase", "Level").',
-    "savings": "ABS(chase total cost − level total cost).",
-}
-
-
 EXCEL_TIPS = [
     ("Start every calculation with =", "Type =C2+E2 rather than the number you worked out. "
      "The checker wants formulas, because a formula updates itself when an input changes."),
     ("Fill down", "Write February's formula once, select it and drag the small square at "
      "the bottom-right corner down to December (or double-click it)."),
     ("Absolute references with $", "When every month must point at ONE cell (for example "
-     "capacity per worker in $S$2), lock it with $ signs or use a name. Without the $, "
+     "a planning cell such as $C$17), lock it with $ signs or use a name. Without the $, "
      "filling down slides the reference onto empty cells."),
     ("Use the names", "Every given number has a name (LaborCost, HireCost, BeginInv, ...). "
      "=F2*LaborCost is easier to read and check than =F2*Scenario!$B$22."),
-    ("Link, don't retype", "On the Summary sheet, point at the plan totals: ='Chase Plan'!P14. "
-     "If your plan changes, the summary follows."),
+    ("Link, don't retype", "On the Summary sheet, point at your plan's totals: type = and "
+     "click the total on the plan sheet. If your plan changes, the summary follows."),
     ("Save, then upload", "Save the file as .xlsx in Excel (or Google Sheets → Download → "
      ".xlsx) so the calculated values are stored. Then upload it in the app."),
 ]
 
 EXCEL_FUNCTIONS = [
-    ("SUM", "=SUM(B2:B13)", "adds a range: total demand, total cost"),
-    ("MAX", "=MAX(0, C2+E2-D2-B2)", "the larger value: keeps inventory from going negative"),
+    ("SUM", "=SUM(B2:B13)", "adds a range of cells"),
+    ("MAX", "=MAX(0, A5-B5)", "the larger value: with 0 first, a result can never go below zero"),
     ("MIN", "=MIN(B2:B13)", "the smallest value"),
-    ("ROUNDUP", "=ROUNDUP(E2/$S$2, 0)", "rounds up: 10.2 workers means you need 11"),
-    ("IF", '=IF(B11<C11,"Chase","Level")', "picks one of two results based on a test"),
-    ("COUNTIF", '=COUNTIF(J2:J13,">0")', "counts the cells that meet a condition"),
-    ("ABS", "=ABS(B11-C11)", "size of a difference, without the minus sign"),
+    ("ROUNDUP", "=ROUNDUP(7.2, 0)", "rounds up to a whole number: 7.2 becomes 8"),
+    ("IF", '=IF(A1<B1,"A","B")', "picks one of two results based on a test"),
+    ("COUNTIF", '=COUNTIF(A2:A13,">0")', "counts the cells that meet a condition"),
+    ("ABS", "=ABS(A1-B1)", "size of a difference, without the minus sign"),
 ]
 
 EXCEL_ERRORS = [

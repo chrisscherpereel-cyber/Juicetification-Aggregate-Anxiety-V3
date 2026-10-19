@@ -3,7 +3,7 @@
 # Every parameter has a default, so an app opened with no config behaves as the
 # standalone practice version.
 APP_KEY = "app"; NAME = "Aggregate Anxiety"; SCHEMA_VERSION = 1
-MODEL_VERSION = "4.0.0"   # bump when the calculation model or the workbook layout changes
+MODEL_VERSION = "5.0.0"   # bump when the calculation model or the workbook layout changes
 
 _PRESETS = ["standard", "strong_seasonal", "stability_favored", "limited_flex", "tight_storage"]
 
@@ -30,7 +30,7 @@ MANIFEST = {"app_key": APP_KEY, "name": NAME, "schema_version": SCHEMA_VERSION,
   "service_requirement_pct": {"type": "float", "default": 95.0, "min": 0, "max": 100, "group": "Policy", "label": "Required on-time fulfillment % for a feasible hybrid plan (0 = none)"},
   "terminal_backlog_max": {"type": "int", "default": 0, "min": 0, "group": "Policy", "label": "Max backlog allowed at end of December (hybrid)"},
   "scenario_preset": {"type": "str", "default": "standard", "choices": _PRESETS, "group": "Scenario", "label": "Scenario preset (changes only parameters left at default)"},
-  "include_hybrid": {"type": "bool", "default": True, "group": "Pedagogy", "label": "Include the optional Hybrid Plan sheet"},
+  "include_hybrid": {"type": "bool", "default": True, "group": "Pedagogy", "label": "Include the Hybrid Plan piece (students design and submit a hybrid strategy)"},
   "require_formulas": {"type": "bool", "default": True, "group": "Pedagogy", "label": "Calculated cells must contain Excel formulas (a typed number is not accepted)"},
   "min_justification_words": {"type": "int", "default": 50, "min": 0, "max": 1000, "group": "Pedagogy", "label": "Minimum words in the recommendation justification"},
   "assignment_name": {"type": "str", "default": "Aggregate Anxiety: Aggregate Planning in Excel", "group": "Report", "label": "Assignment name shown in the workbook and PDF"},

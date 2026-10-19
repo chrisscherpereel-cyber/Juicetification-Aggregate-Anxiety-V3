@@ -1,51 +1,88 @@
 # Juicetification: Aggregate Anxiety — V3 (Excel edition)
 
 A [Streamlit](https://streamlit.io) companion for learning **aggregate production planning in
-Excel**. Every calculation happens in the student's own spreadsheet; the app hands out a
-personal workbook, checks the completed file cell by cell, and produces a PDF check report.
+Excel**. Students design and build the plans in their own spreadsheet — **choosing the columns
+as well as the formulas** — and submit the work **in pieces**. The app checks each piece on its
+own and gives more guidance with every upload, but never the answer.
 
 You play the operations planner for **Juicetification Inc.**, a juice bottler with a summer
-peak. Each student ID produces its own reproducible demand forecast, so answers can't be
-copied — the method is the same, the numbers are yours.
-
-> V3 replaces V2's in-app worksheets, drills and multiple-choice stages with one loop:
-> **download → build in Excel → upload → fix → upload again**. The planning model, the
-> instructor parameters and the Director integration carry over from V2.
+peak. Each student ID produces its own reproducible demand forecast, so answers can't be copied.
 
 ---
 
-## The four steps (always visible in the sidebar)
+## The steps (always visible in the sidebar)
 
 | Step | What the student does |
 |------|-----------------------|
-| **1 · Meet your scenario** | Enters name and student ID; sees the demand forecast, a chart and the given data. |
-| **2 · Build it in Excel** | Downloads a personal `.xlsx` and follows the sheet-by-sheet guide (also inside the workbook). |
-| **3 · Upload & check** | Uploads the saved workbook. Gets a progress card per sheet, a short **Fix these next** list and a colour-coded grid laid out like the sheet (hover a cell for its feedback). Re-uploads as often as needed. |
-| **4 · Submit** | Once every required cell is correct, downloads a PDF check report and submits **both** the workbook and the PDF to the LMS. A DRAFT report is available any time. |
+| **1 · Scenario & workbook** | Signs in, studies the demand forecast and given data, downloads a personal `.xlsx`. |
+| **2 · Chase plan** | Designs the chase worksheet, uploads, fixes, re-uploads; submits when it is all correct. |
+| **3 · Level plan** | Opens once the chase plan is submitted. Same loop. |
+| **4 · Hybrid plan** | Opens after the level plan. The student chooses workers, regular production, overtime and subcontracting; the plan must be correct **and** respect every limit. |
+| **5 · Compare & recommend** | The Summary sheet: each plan's yearly figures, the cheaper plan (`IF`), the savings (`ABS`), a recommendation and a written justification. |
+| **6 · Final report** | A PDF listing every piece. A DRAFT is available at any time. |
 
-Back/Next buttons at the bottom of every step name their destination; the sidebar shows ✔ for
-finished steps and the last check's progress. A returning student can go straight to
-**Upload & check**: the workbook identifies its owner, so no re-entry is needed.
+Pieces open one at a time (🔒 until the previous one is submitted). Each submitted piece gets a
+one-page **receipt PDF**, so an instructor can collect pieces on separate due dates. The student
+keeps working in the same workbook throughout and uploads it at each step; only that step's
+piece is checked.
 
-## The workbook
+## Students build the columns
 
-| Sheet | Contents |
-|-------|----------|
-| **Start Here** | Name/ID, the six steps, colour key, and the rule for every column (chase and level). |
-| **Scenario** | Demand forecast and every given number, each with an Excel **name** (`LaborCost`, `HireCost`, `BeginInv`, `EndTarget`, `BottlesPerHour`, …). Locked. |
-| **Chase Plan** | Row 1 headings, January = row 2 … December = row 13, row 14 totals. Planning cells S2–S3 (capacity per worker, ending-inventory target). |
-| **Level Plan** | Same grid. Planning cells S2–S6: capacity, target, total demand, level production, level workforce. |
-| **Hybrid Plan** *(optional)* | Green decision cells (workers, regular, overtime, subcontract); everything else calculated. Checked for correctness **and** feasibility. |
-| **Summary** | Links to each plan's totals, MAX/COUNTIF measures, `IF` for the cheaper plan, `ABS` for the savings, a recommendation drop-down and a justification box. |
-| **Excel Help** | Habits (formulas, fill down, `$` references, names), the functions used, what each error means, and a small `$` practice block. |
+On each plan sheet only **Month** (column A) and **Demand** (column B) are given. The student
+types a heading in row 1 for every column the plan needs (peach cells, from column C on), the
+formulas for January–December below, and yearly totals in row 14. Planning cells under the
+grid hold the one-off calculations (capacity per worker, level rate, level workforce, …).
 
-Colour key: yellow = given, blue = your formula, green = your decision, darker blue = your
-`SUM` totals. Column-heading comments repeat each rule. Sheets are protected **without a
-password** (to prevent accidental edits of given data); every cell a student fills is unlocked.
-A demand-vs-production chart fills in as the student works, backorders turn red and
-inventory over storage capacity turns amber.
+The app never lists the columns. It asks the questions a plan must answer each month —
+*"How many bottles are on the shelf when the month starts?"*, *"How many orders are still
+unfilled at the end of the month?"* — and the student turns each one into a column.
 
-### Model rules (identical in the workbook, the app and the checker)
+The checker reads the student's headings ([aggplan/recognize.py](aggplan/recognize.py)), so
+**any order and any clear wording works**: "Starting Stock", "Beg Inv" and "Opening inventory"
+are all Beginning Inventory; "Crew", "Fired", "Wages", "Shortage Penalty" are Workers, Layoffs,
+Labor Cost and Backorder Cost. After each upload the student sees how each heading was read:
+
+* a **missing** column is reported as the question the plan can't answer yet (more specific on
+  later uploads, ending with a suggested heading);
+* two columns that look the same are flagged as **duplicates**;
+* an unclear heading whose numbers clearly match a column is **checked as that column**, with a
+  request for a clearer heading;
+* unrecognised extra columns are treated as **helper columns** and left alone.
+
+## Help that grows with each attempt — never the answer
+
+Every column, planning cell and Summary item has a four-step hint ladder
+([aggplan/hints.py](aggplan/hints.py)):
+
+| Step | Example — Ending Inventory |
+|---|---|
+| 1 · Think about it | *What is left on the shelf after this month's orders go out?* |
+| 2 · The idea | Start with what you had, add what you made, ship the orders you owed and this month's demand; stock can never be negative. |
+| 3 · In Excel | One formula with Beginning Inventory, Production, Beginning Backorders and Demand, wrapped in `MAX(0, …)`. |
+| 4 · The rule | Ending Inventory = MAX(0, Beginning Inventory + Production − Beginning Backorders − Demand). |
+
+Each upload in which an item is **still wrong** moves that item up one step, so help is
+focused on what the student is stuck on. Cells that are merely **empty**, or wrong only because
+an earlier cell is wrong (↪ "follows an earlier mistake"), never unlock more help — uploading an
+unfinished workbook does not reveal the method. From step 2, the student also sees a specific
+observation about their own cell when one applies: a reference that slid because it lacks `$`
+("lock it in January's formula, probably `$C$20`"), a fraction of a worker, a negative stock,
+January's special case. **No hint ever contains a number from the scenario** (tested).
+
+Re-uploading the same file is not a new attempt. The final report records, per piece, the number
+of uploads, the first-attempt score and the highest hint step used — evidence of process for the
+instructor, not a grade.
+
+### Cell statuses
+
+✔ correct (and calculated by a formula) · ✖ not right yet · ↪ follows an earlier mistake ·
+✎ right number but typed in · ○ empty · ⚠ Excel error / text / not calculated ·
+◆ hybrid decision (the student's choice)
+
+The results show a "What to work on" list (root causes only), the column check, and a grid laid
+out like the student's own sheet.
+
+## Model rules
 
 ```
 Beginning Inventory  = last month's Ending Inventory     (January = BeginInv)
@@ -59,89 +96,55 @@ Chase:  Production = MAX(0, Demand + EndTarget − Beg Inv + Beg Backorders)
         Workers    = ROUNDUP(Production ÷ capacity per worker, 0)
 Level:  Production = (total demand + EndTarget − BeginInv) ÷ 12, every month
         Workers    = ROUNDUP(level production ÷ capacity per worker, 0), every month
+Hybrid: Workers, Regular, Overtime and Subcontract production are decisions;
+        Total Production = Regular + Overtime + Subcontract
 ```
 
-`EndTarget` is 0, or the safety stock when the instructor sets `safety_stock_policy=maintain`.
-Workers are whole and paid for capacity whether or not it is used.
+These rules are in this README for instructors; students reach them only through the hint
+ladder. `EndTarget` is 0, or the safety stock when `safety_stock_policy=maintain`.
 
 ## How checking works
 
-The checker never evaluates a formula. It reads the file twice — once for the formulas the
-student typed and once for the values **Excel calculated and saved** — and compares each value
-with a Python answer key ([aggplan/engine.py](aggplan/engine.py)). Every checked cell gets one
-status:
+The checker never evaluates a formula. It reads the file twice — the formulas the student typed
+and the values **Excel calculated and saved** — and compares each value with a Python answer key
+([aggplan/engine.py](aggplan/engine.py)); for the hybrid, the key is built from the student's
+own decisions and the plan is also tested against every limit (capacity, overtime, subcontract,
+storage, on-time fulfillment, December backorders and inventory). It refuses, with a message the
+student can act on, a file that isn't this app's workbook, belongs to another student ID, was made
+for another scenario or configuration, has altered demand, or isn't an `.xlsx`.
 
-| | Status | Meaning |
-|---|---|---|
-| ✔ | Correct | right value, calculated by a formula |
-| ✖ | Not right yet | wrong value, with the column's rule and, where it applies, a targeted hint |
-| ↪ | Follows an earlier mistake | the cell's formula follows the rule given the student's *own* upstream cells; fix the root cause and it corrects itself |
-| ✎ | Typed, not calculated | right number, typed in (only when `require_formulas` is on) |
-| ○ | Empty | still to do |
-| ⚠ | Excel error / text / not calculated | `#DIV/0!`, `#NAME?` …; words in a number cell; or a file never saved by a spreadsheet program |
-
-The ↪ status is what keeps feedback short: one slip in February no longer turns the rest of
-the sheet red. **Fix these next** lists root causes only, grouped per column ("and 10 more like
-it in this column"), and counts the ↪ cells separately. Targeted hints cover the common Excel
-mistakes: a planning-cell reference without `$` that slid when filled down ("Lock it: `$S$6`"),
-workers not rounded up, negative inventory without `MAX(0, …)`, and January's special cases.
-
-The checker also refuses — with a message the student can act on — a file that isn't this
-app's workbook, belongs to another student ID, was made for another scenario or an older
-configuration, has altered demand, or isn't an `.xlsx` (size and zip-bomb limits apply).
-
-A workbook is **complete** when every cell on Chase Plan, Level Plan and Summary is ✔, a
-recommendation is chosen and the justification has at least `min_justification_words` words.
-The hybrid plan is optional unless the student recommends it.
-
-Spreadsheet programs: Excel (Windows, Mac, web) is verified. Google Sheets works via
-*File → Download → Microsoft Excel (.xlsx)*, which stores calculated values. A file that was
-never opened and saved by a spreadsheet program has formulas but no values; the checker says so.
+Excel (Windows, Mac, web) is verified. Google Sheets works via *File → Download → Microsoft Excel
+(.xlsx)*. A file never saved by a spreadsheet program has no calculated values; the app says so.
 
 ## Instructor configuration (optional)
 
-Standalone practice needs no setup. Parameters live in [manifest.py](manifest.py) and can be set
-from the Juicetification Director form, or by URL: `?cfg=<base64 json>`, `?game=<code>`,
-`?seed=<int>` (one scenario for everyone), `?manifest=1` (emit the schema).
+Parameters live in [manifest.py](manifest.py) and can be set from the Juicetification Director
+form or by URL: `?cfg=<base64 json>`, `?game=<code>`, `?seed=<int>`, `?manifest=1`.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| demand, costs, capacity, inventory | as V2 | the planning data (see manifest.py) |
-| `safety_stock_policy` | `none` | `maintain` makes `EndTarget` = safety stock for both plans |
+| demand, costs, capacity, inventory | as V2 | the planning data |
+| `safety_stock_policy` | `none` | `maintain` makes `EndTarget` = safety stock |
 | `scenario_preset` | `standard` | `strong_seasonal`, `stability_favored`, `limited_flex`, `tight_storage` |
-| `include_hybrid` | true | include the optional Hybrid Plan sheet |
+| `include_hybrid` | true | include the Hybrid Plan piece |
 | `require_formulas` | true | a typed number in a calculated cell is not accepted |
-| `min_justification_words` | 50 | minimum length of the written justification |
+| `min_justification_words` | 50 | minimum length of the justification |
 | `service_requirement_pct`, `terminal_backlog_max` | 95, 0 | hybrid feasibility limits |
-| `assignment_name`, `report_timezone` | … | shown in the workbook and the PDF |
+| `assignment_name`, `report_timezone` | … | shown in the workbook and PDFs |
 
 `include_hybrid`, `require_formulas`, `min_justification_words`, `assignment_name` and
-`report_timezone` do not change any correct answer, so they can be changed mid-course without
-invalidating workbooks already handed out. Changing anything else (costs, demand, capacity,
-policy) invalidates them by design: students then download a fresh workbook.
+`report_timezone` don't change any correct answer and can be changed mid-course; anything else
+invalidates workbooks already handed out, by design.
 
-### Answer keys
+**Answer keys:** `python tools/make_answer_key.py --sid A1234567 --game OPS301-F26` writes that
+student's workbook filled with headings and reference formulas (open it in Excel to calculate).
 
-```bash
-python tools/make_answer_key.py --sid A1234567 --game OPS301-F26
-```
-
-writes the student's workbook layout filled with reference formulas (open it in Excel and
-everything calculates). Use `--seed` for a scenario number and `--cfg cfg.json` for a non-default
-configuration.
-
-### Identity, signed links and completion records
-
-Unchanged from V2. A typed student ID is a label; for graded use set `ASSIGNMENT_SIGNING_KEY`
-and mint per-student links with `tools/make_assignment_links.py`. With the Dropbox store
-configured (`DB_ENCRYPTION_KEY` + Dropbox credentials, see [student_store.py](student_store.py)),
-the app records progress after each check and a completion record (attempt ID, workbook SHA-256,
-seed, recommendation, plan costs) when a final report is created, so the Director roster fills
-itself. Without a store everything still works and nothing is recorded.
-
-The PDF report prints the workbook's SHA-256, so an instructor can confirm the submitted
-workbook is the one that was checked. Plan cost is a result, not a grade; the recommendation
-and justification are for the instructor's rubric.
+**Identity and records** (unchanged from V2): signed links via `ASSIGNMENT_SIGNING_KEY` and
+`tools/make_assignment_links.py`. With the Dropbox store configured (see
+[student_store.py](student_store.py)) the app saves each student's pieces, attempts and hint
+levels after every upload — so a student can close the browser and resume — and writes a
+completion record (report ID, per-piece uploads and help, workbook SHA-256s, plan costs) with the
+final report. Without a store everything works within a browser session.
 
 ## Run it
 
@@ -152,27 +155,26 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Tests: `pip install -r requirements-dev.txt && python -m pytest tests -q`.
-
-The checker tests run against workbooks **calculated by real Excel** (`tests/fixtures`). After
-changing the workbook layout or the model, regenerate them on Windows with Excel installed:
-
-```bash
-python tests/make_fixtures.py
-```
+Tests: `pip install -r requirements-dev.txt && python -m pytest tests -q`. The checker tests run
+against workbooks **calculated by real Excel** in `tests/fixtures` — the answer key, a workbook
+with typical mistakes, and one whose chase columns are in a student's own order and wording.
+After changing the workbook layout or the model, regenerate them on Windows with Excel:
+`python tests/make_fixtures.py`.
 
 ## Architecture
 
 ```
-app.py                 the four steps (Streamlit)
+app.py                 the six steps (Streamlit): pieces, uploads, hint levels, receipts
 aggplan/               no Streamlit import; unit-testable
   scenario.py          Scenario: parameters, demand, Excel names
   engine.py            answer key: simulate(), chase/level reference plans, feasibility
-  layout.py            where every cell lives (shared by builder and checker)
-  text.py              rules and help text, generated from the active scenario
+  layout.py            fixed cells: given columns, totals row, planning cells, Summary
+  recognize.py         reads the student's headings -> columns
+  checker.py           grades one piece of an uploaded workbook
+  hints.py             the four-step hint ladders and the column questions
+  text.py              scenario text and Excel help
   workbook.py          builds the student workbook (and the answer key)
-  checker.py           reads an uploaded workbook and grades every cell
-  report.py            PDF check report
+  report.py            piece receipts and the final report (PDF)
   identity.py          signed assignment links (from V2)
 student_store.py, juice_director.py   shared Director modules (unchanged)
 tools/                 make_answer_key.py, make_assignment_links.py, recalc_in_excel.ps1
@@ -181,10 +183,12 @@ tests/                 pytest suite + Excel-calculated fixtures
 
 ## Known limitations
 
-* A browser refresh keeps the student ID (it is in the URL) but clears the last check; the
-  workbook itself is the saved work, so re-uploading restores everything.
-* The checker can't see *how* a value was computed beyond "formula or typed", so an exotic but
-  correct formula passes, and two errors that cancel out can pass a cell.
+* Without the Dropbox store, attempt counts and submitted pieces live in the browser session; a
+  refresh keeps the student ID but clears them (the work itself is safe in the workbook, and a
+  correct piece re-submits on its first upload).
+* Heading recognition covers common wording; an unusual heading is matched by its numbers when
+  they are right, otherwise the student is asked for a clearer heading.
+* Two errors that cancel out can pass a cell; the checker sees values, and only "formula or typed".
 * LibreOffice and Apple Numbers exports are not verified.
 
 ## License

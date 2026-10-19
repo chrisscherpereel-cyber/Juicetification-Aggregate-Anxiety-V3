@@ -1,20 +1,23 @@
-"""Check an uploaded workbook against the answer key.
+"""Check ONE piece of an uploaded workbook: the chase plan, the level plan, the hybrid plan
+or the Summary comparison.
 
-The checker never evaluates a formula itself. It reads the file twice with openpyxl:
-once for the formulas the student typed and once for the values Excel calculated and saved
-with the file. Each checked cell gets one status:
+The checker never evaluates a formula. It reads the file twice with openpyxl: once for the
+formulas the student typed and once for the values Excel calculated and saved. On a plan
+sheet it first works out which column is which from the student's own headings
+(recognize.py), then grades every month of every recognised column.
 
-  ok          right value, calculated by a formula
-  typed       right value, but typed in as a number (only when formulas are required)
-  carried     the cell follows the rule, but an earlier cell it uses is wrong
-  wrong       the value is wrong
-  blank       nothing there yet
-  error       Excel shows an error (#DIV/0!, #NAME? ...)
-  text        words where a number belongs
-  uncalc      a formula with no saved value (the file was not saved by a spreadsheet app)
+Cell statuses:
+  ok        right value, calculated by a formula
+  typed     right value, but typed in as a number (when formulas are required)
+  carried   the cell follows the rule, but an earlier cell it uses is wrong
+  wrong     the value is wrong
+  blank     nothing there yet
+  error     Excel shows an error (#DIV/0!, #NAME? ...)
+  text      words where a number belongs
+  uncalc    a formula with no saved value (file not saved by a spreadsheet program)
+  decision  a hybrid decision cell (the student's choice; not graded for value)
 
-"carried" is the useful one for learning: it separates "your formula is wrong" from
-"your formula is right but is fed a wrong number", so the student fixes the root cause.
+The checker reports WHAT is wrong; how much help to show is the app's job (hints.py).
 """
 
 from __future__ import annotations
@@ -25,21 +28,23 @@ import math
 import re
 import zipfile
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+from openpyxl.utils import column_index_from_string, get_column_letter
 
-from . import MODEL_VERSION, engine, layout as L, text
+from . import MODEL_VERSION, engine, layout as L
 from .engine import Decision
+from .recognize import ColumnMap, map_columns
 from .scenario import Scenario
 from .workbook import APP_ID
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_UNCOMPRESSED = 60 * 1024 * 1024
 MAX_MEMBERS = 2000
-READ_ROWS, READ_COLS = 40, 30
+READ_ROWS, READ_COLS = 40, L.LAST_STUDENT_COL + 2
 
-OK_STATUSES = {"ok"}
+PROBLEM = {"wrong", "typed", "error", "text", "uncalc", "carried"}
 STATUS_LABEL = {
     "ok": "✔ Correct", "typed": "✎ Typed, not calculated", "carried": "↪ Follows an earlier mistake",
     "wrong": "✖ Not right yet", "blank": "○ Empty", "error": "⚠ Excel error",
@@ -48,16 +53,19 @@ STATUS_LABEL = {
 STATUS_HELP = {
     "typed": "The number is right but it was typed in. Replace it with a formula so Excel "
              "calculates it.",
-    "carried": "Your formula follows the rule, but it uses an earlier cell that is wrong. Fix "
+    "carried": "This cell follows the rule, but it uses an earlier cell that is wrong. Fix "
                "that cell first and this one will correct itself.",
-    "blank": "This cell still needs a formula.",
+    "blank": "Still to do.",
     "error": "Excel could not calculate this cell. See 'What an error means' on the Excel "
              "Help sheet.",
-    "text": "This cell holds text. Delete it and enter a formula that starts with =.",
-    "uncalc": "The formula has no saved result. Open the file in Excel, let it calculate, "
-              "save as .xlsx and upload again.",
+    "text": "This cell holds text. Enter a formula that starts with =.",
+    "uncalc": "The formula has no saved result. Open the file in Excel, save it as .xlsx and "
+              "upload again.",
 }
+PIECE_TITLES = {"chase": "Chase plan", "level": "Level plan", "hybrid": "Hybrid plan",
+                "summary": "Compare & recommend"}
 _ERR_RE = re.compile(r"^#(DIV/0!|NAME\?|REF!|VALUE!|N/A|NUM!|NULL!|SPILL!|CALC!)")
+_REF_RE = re.compile(r"(?<![A-Z$])(\$?)([A-Z]{1,2})(\$?)(\d+)(?![\d(])")
 
 
 # =========================================================================================
@@ -65,8 +73,8 @@ _ERR_RE = re.compile(r"^#(DIV/0!|NAME\?|REF!|VALUE!|N/A|NUM!|NULL!|SPILL!|CALC!)
 # =========================================================================================
 @dataclass
 class Cell:
-    value: object = None          # value saved by Excel (None if blank)
-    formula: Optional[str] = None  # text of the formula, if the cell holds one
+    value: object = None
+    formula: Optional[str] = None
 
     @property
     def blank(self) -> bool:
@@ -94,8 +102,7 @@ def _container_problem(data: bytes) -> Optional[str]:
             infos = z.infolist()
             if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > MAX_UNCOMPRESSED:
                 return "The file is too large inside to be this workbook."
-            names = {i.filename for i in infos}
-            if "xl/workbook.xml" not in names:
+            if "xl/workbook.xml" not in {i.filename for i in infos}:
                 return "This is not an Excel .xlsx workbook."
     except zipfile.BadZipFile:
         return ("This is not an Excel .xlsx workbook. If you used another program, save or "
@@ -116,15 +123,13 @@ def read_book(data: bytes) -> Tuple[Optional[Book], Optional[str]]:
         return None, f"The workbook could not be opened ({type(e).__name__}). Save it again as .xlsx."
     sheets: Dict[str, Dict[str, Cell]] = {}
     for name in wf.sheetnames:
-        f_ws, v_ws = wf[name], wv[name]
         cells: Dict[str, Cell] = {}
-        for row_f, row_v in zip(f_ws.iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS),
-                                v_ws.iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS)):
+        for row_f, row_v in zip(wf[name].iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS),
+                                wv[name].iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS)):
             for cf, cv in zip(row_f, row_v):
                 if not hasattr(cf, "coordinate"):
                     continue                                   # merged-cell placeholder
-                raw = cf.value
-                formula = None
+                raw, formula = cf.value, None
                 if isinstance(raw, str) and raw.startswith("=") and cf.data_type == "f":
                     formula = raw
                 elif type(raw).__name__ in ("ArrayFormula", "DataTableFormula"):
@@ -152,12 +157,13 @@ def read_book(data: bytes) -> Tuple[Optional[Book], Optional[str]]:
 class CellCheck:
     sheet: str
     ref: str
-    label: str                 # e.g. "Ending Inventory, March"
-    group: str                 # column heading / planning label (for grids)
-    row_label: str             # month / "Total" / "Planning"
+    item: str          # hint key: concept, "plan:<key>", "total", "summary:<metric>" ...
+    label: str         # e.g. "Ending Inventory, March"
+    row_label: str     # month / "Total" / "Planning" / summary row
+    col_label: str     # grid column (e.g. "F · Closing Stock")
     status: str
-    message: str = ""
-    shown: str = ""            # what the student's cell shows
+    shown: str = ""
+    diag: str = ""     # a specific observation about THIS cell (shown from hint level 2)
 
     @property
     def needs_work(self) -> bool:
@@ -165,13 +171,34 @@ class CellCheck:
 
 
 @dataclass
-class SheetResult:
-    key: str
+class ColumnNote:
+    kind: str                     # missing | duplicate | unknown | guessed
+    concept: str = ""
+    letters: Tuple[str, ...] = ()
+    heading: str = ""
+
+
+@dataclass
+class PieceResult:
+    piece: str
     title: str
+    fatal: List[str] = field(default_factory=list)
+    columns: List[Tuple[str, str, Optional[str]]] = field(default_factory=list)  # letter, heading, read as
+    notes: List[ColumnNote] = field(default_factory=list)
     cells: List[CellCheck] = field(default_factory=list)
-    required: bool = True
-    attempted: bool = True
-    notes: List[str] = field(default_factory=list)
+    messages: List[str] = field(default_factory=list)
+    feasibility: List[dict] = field(default_factory=list)
+    metrics: Dict[str, Dict[str, float]] = field(default_factory=dict)   # plan -> summarize()
+    sha256: str = ""
+    recommendation: str = ""
+    justification: str = ""
+    words: int = 0
+    min_words: int = 0
+    must_be_feasible: bool = False
+
+    @property
+    def readable(self) -> bool:
+        return not self.fatal
 
     @property
     def graded(self) -> List[CellCheck]:
@@ -186,64 +213,45 @@ class SheetResult:
         return len(self.graded)
 
     @property
+    def missing_columns(self) -> List[str]:
+        return [n.concept for n in self.notes if n.kind == "missing"]
+
+    @property
+    def feasible(self) -> bool:
+        return all(c["ok"] for c in self.feasibility) if self.feasibility else True
+
+    @property
+    def uncalculated(self) -> bool:
+        return any(c.status == "uncalc" for c in self.cells)
+
+    @property
     def complete(self) -> bool:
-        return self.attempted and all(c.status == "ok" for c in self.graded)
+        return (self.readable and not any(n.kind in ("missing", "duplicate") for n in self.notes)
+                and bool(self.graded) and all(c.status == "ok" for c in self.graded)
+                and not self.messages
+                and (self.feasible or not self.must_be_feasible))
+
+    def problem_items(self) -> Dict[str, List[CellCheck]]:
+        """Items (hint keys) with a real mistake on this attempt. Carried and blank cells are
+        excluded, so unfinished work never unlocks more help."""
+        out: Dict[str, List[CellCheck]] = {}
+        for c in self.cells:
+            if c.status in PROBLEM - {"carried"}:
+                out.setdefault(c.item, []).append(c)
+        return out
+
+    def todo_items(self) -> Dict[str, List[CellCheck]]:
+        out: Dict[str, List[CellCheck]] = {}
+        for c in self.cells:
+            if c.status == "blank":
+                out.setdefault(c.item, []).append(c)
+        return out
 
     def counts(self) -> Dict[str, int]:
         out: Dict[str, int] = {}
         for c in self.graded:
             out[c.status] = out.get(c.status, 0) + 1
         return out
-
-
-@dataclass
-class CheckResult:
-    fatal: List[str] = field(default_factory=list)
-    sheets: Dict[str, SheetResult] = field(default_factory=dict)
-    meta: Dict[str, str] = field(default_factory=dict)
-    sha256: str = ""
-    recommendation: str = ""
-    justification: str = ""
-    words: int = 0
-    min_words: int = 0
-    plan_totals: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    hybrid_feasibility: List[dict] = field(default_factory=list)
-    uncalculated: bool = False
-
-    @property
-    def readable(self) -> bool:
-        return not self.fatal
-
-    @property
-    def complete(self) -> bool:
-        return self.readable and all(s.complete for s in self.sheets.values() if s.required)
-
-    def missing(self) -> List[str]:
-        if self.fatal:
-            return list(self.fatal)
-        out = []
-        for s in self.sheets.values():
-            if s.required and not s.complete:
-                left = s.n_total - s.n_ok
-                out.append(f"{s.title}: {left} cell{'s' if left != 1 else ''} still to fix")
-        return out
-
-    def fix_first(self, limit: int = 8) -> Tuple[List[Tuple[CellCheck, int]], int]:
-        """What to fix next: ([(first cell, how many similar cells)], number of cells that
-        only carry an earlier mistake). Problems are grouped by sheet, column and status, so
-        twelve months with the same $-sign slip show up once; carried cells are left out
-        because they correct themselves once their root cause is fixed."""
-        groups: Dict[Tuple[str, str, str], List[CellCheck]] = {}
-        carried = 0
-        for s in self.sheets.values():
-            if not s.attempted:
-                continue
-            for c in s.cells:
-                if c.status == "carried":
-                    carried += 1
-                elif c.needs_work:
-                    groups.setdefault((c.sheet, c.group, c.status), []).append(c)
-        return [(cs[0], len(cs)) for cs in groups.values()][:limit], carried
 
 
 # =========================================================================================
@@ -270,68 +278,135 @@ def _shown(cell: Cell) -> str:
     return str(v)[:40]
 
 
-def _tol(engine_name: str) -> float:
-    return 0.01 if engine_name in ("Workers", "level_workers", "Peak Workforce") else 0.5
+def _tol(item: str) -> float:
+    return 0.01 if item in ("Workers", "level_workers", "Peak Workforce") else 0.5
 
 
 def _close(a: Optional[float], b: Optional[float], tol: float) -> bool:
     return a is not None and b is not None and abs(a - b) <= max(tol, 1e-9 * abs(b))
 
 
-_LOCK_RE = re.compile(r"(?<![$A-Z])([SY])(\d+)\b")
+def _f(*xs) -> bool:
+    return all(x is not None for x in xs)
 
 
 def _judge(cell: Cell, key: Optional[float], local: Optional[float], tol: float,
-           require_formula: bool, rule: str, extra: Optional[Callable[[float], str]] = None
-           ) -> Tuple[str, str]:
-    """(status, message) for one numeric cell."""
+           require_formula: bool) -> str:
     if cell.blank:
-        return "blank", STATUS_HELP["blank"] + (f" Rule: {rule}" if rule else "")
+        return "blank"
     if cell.formula is not None and cell.value is None:
-        return "uncalc", STATUS_HELP["uncalc"]
+        return "uncalc"
     if isinstance(cell.value, str):
-        if _ERR_RE.match(cell.value.strip()):
-            return "error", f"Excel shows {cell.value.strip()}. " + STATUS_HELP["error"]
-        return "text", STATUS_HELP["text"]
+        return "error" if _ERR_RE.match(cell.value.strip()) else "text"
     v = _num(cell)
     if v is None:
-        return "text", STATUS_HELP["text"]
+        return "text"
     if _close(v, key, tol):
-        if require_formula and cell.formula is None:
-            return "typed", STATUS_HELP["typed"]
-        return "ok", ""
+        return "typed" if require_formula and cell.formula is None else "ok"
     if _close(v, local, tol):
-        return "carried", STATUS_HELP["carried"]
-    msg = f"Rule: {rule}" if rule else "Check this value."
-    if extra:
-        hint = extra(v)
-        if hint:
-            msg = hint + " " + msg
-    return "wrong", msg
+        return "carried"
+    return "wrong"
+
+
+def _diag(kind: str, concept: str, i: int, cell: Cell, v, pv, scn: Scenario) -> str:
+    """One specific observation about a wrong cell (never the answer)."""
+    if isinstance(cell.value, str) and _ERR_RE.match(cell.value.strip()):
+        return f"Excel shows {cell.value.strip()} here."
+    f = (cell.formula or "").upper()
+    if i > 0 and f:
+        for m in _REF_RE.finditer(f):
+            if int(m.group(4)) > L.TOTAL_ROW and not m.group(3):
+                ref = f"{m.group(2)}{m.group(4)}"
+                orig = f"${m.group(2)}${int(m.group(4)) - i}"
+                return (f"This formula points at {ref}: filling down moved a reference that "
+                        f"should stay put. Lock it with $ signs in January's formula "
+                        f"(probably {orig}) and fill down again.")
+    x = _num(cell)
+    if x is None:
+        return ""
+    if concept == "Workers" and kind == "chase":
+        pr, cap = v.get("Regular Production", [None] * 12)[i], pv.get("capacity")
+        if _f(pr, cap) and cap:
+            raw = pr / cap
+            if abs(x - raw) < 0.01 and abs(raw - round(raw)) > 0.01:
+                return "This is a fraction of a worker — you can't employ part of a person."
+            if abs(x - math.floor(raw)) < 0.01 and raw > math.floor(raw) + 1e-9:
+                return "Rounding down leaves you short of capacity."
+    if concept in ("Ending Inventory", "Ending Backorders", "Hires", "Layoffs",
+                   "Regular Production") and x < -1e-9:
+        return "This can't be negative."
+    if concept in ("Hires", "Layoffs", "Beginning Inventory", "Beginning Backorders") and i == 0:
+        return "January is a special case: there is no previous month in the table."
+    return ""
 
 
 # =========================================================================================
 # Plan sheets
 # =========================================================================================
-def _plan_values(book: Book, kind: str) -> Dict[str, List[Optional[float]]]:
-    sheet = L.PLAN_SHEETS[kind]
+def _headings(book: Book, sheet: str) -> Dict[int, str]:
     out = {}
-    for col in L.PLAN_COLUMNS[kind]:
-        if col.engine == "Month":
-            continue
-        out[col.engine] = [_num(book.cell(sheet, L.cell_ref(kind, col.engine, i)))
-                           for i in range(L.N_MONTHS)]
+    for j in range(L.FIRST_STUDENT_COL, L.LAST_STUDENT_COL + 1):
+        v = book.cell(sheet, f"{get_column_letter(j)}1").value
+        if v is not None and str(v).strip():
+            out[j] = str(v).strip()
     return out
+
+
+def _col_values(book: Book, sheet: str, letter: str) -> List[Optional[float]]:
+    return [_num(book.cell(sheet, f"{letter}{L.month_row(i)}")) for i in range(L.N_MONTHS)]
 
 
 def _planning_values(book: Book, kind: str) -> Dict[str, Optional[float]]:
     sheet = L.PLAN_SHEETS[kind]
-    return {pc.key: _num(book.cell(sheet, L.planning_ref(kind, pc.key)))
-            for pc in L.PLANNING[kind][2]}
+    return {pc.key: _num(book.cell(sheet, L.planning_ref(kind, pc.key))) for pc in L.PLANNING[kind]}
 
 
-def _f(*xs) -> bool:
-    return all(x is not None for x in xs)
+def _hybrid_decision(book: Book, cm: ColumnMap) -> Optional[Decision]:
+    sheet = L.SHEET_HYBRID
+    if "Workers" not in cm.by_concept or "Regular Production" not in cm.by_concept:
+        return None
+    w = _col_values(book, sheet, cm.by_concept["Workers"])
+    r = _col_values(book, sheet, cm.by_concept["Regular Production"])
+    ot = (_col_values(book, sheet, cm.by_concept["Overtime Production"])
+          if "Overtime Production" in cm.by_concept else [0.0] * 12)
+    sub = (_col_values(book, sheet, cm.by_concept["Subcontract Production"])
+           if "Subcontract Production" in cm.by_concept else [0.0] * 12)
+    ot = [x or 0.0 for x in ot]
+    sub = [x or 0.0 for x in sub]
+    if not (_f(*w) and _f(*r)) or any(x < 0 for x in w + r + ot + sub):
+        return None
+    return Decision(w, r, ot, sub)
+
+
+@dataclass
+class PlanRead:
+    cm: ColumnMap
+    values: Dict[str, List[Optional[float]]]
+    planning: Dict[str, Optional[float]]
+    key: Optional[pd.DataFrame]
+
+
+def read_plan(book: Book, scn: Scenario, kind: str) -> PlanRead:
+    """Map the student's columns and read their numbers; build the answer key (for the
+    hybrid: from the student's own decisions)."""
+    sheet = L.PLAN_SHEETS[kind]
+    heads = _headings(book, sheet)
+    if kind == "hybrid":
+        dec = _hybrid_decision(book, map_columns(heads, kind))
+        key = engine.simulate(scn, dec) if dec else None
+    else:
+        key = engine.reference_plan(scn, kind)
+
+    def guess(concept: str, letter: str) -> bool:
+        if key is None or concept not in key:
+            return False
+        vals = _col_values(book, sheet, letter)
+        hits = sum(_close(a, float(b), _tol(concept)) for a, b in zip(vals, key[concept]))
+        return hits >= 10
+
+    cm = map_columns(heads, kind, guess)
+    values = {c: _col_values(book, sheet, letter) for c, letter in cm.by_concept.items()}
+    return PlanRead(cm, values, _planning_values(book, kind), key)
 
 
 def _local(kind: str, col: str, i: int, v: Dict[str, List[Optional[float]]],
@@ -339,8 +414,9 @@ def _local(kind: str, col: str, i: int, v: Dict[str, List[Optional[float]]],
     """What this cell SHOULD show given the student's own upstream cells."""
     p = scn.params
     d = float(scn.demand[i])
-    g = lambda name: v[name][i]                                   # noqa: E731
-    prev = lambda name: v[name][i - 1]                             # noqa: E731
+    none = [None] * L.N_MONTHS
+    g = lambda name: v.get(name, none)[i]                          # noqa: E731
+    prev = lambda name: v.get(name, none)[i - 1]                   # noqa: E731
     prod_col = "Total Production" if kind == "hybrid" else "Regular Production"
     if col == "Beginning Inventory":
         return float(p["beginning_inventory"]) if i == 0 else prev("Ending Inventory")
@@ -348,19 +424,14 @@ def _local(kind: str, col: str, i: int, v: Dict[str, List[Optional[float]]],
         return 0.0 if i == 0 else prev("Ending Backorders")
     if col == "Regular Production":
         if kind == "chase":
-            t = pv.get("target")
-            bi, bb = g("Beginning Inventory"), g("Beginning Backorders")
+            t, bi, bb = pv.get("target"), g("Beginning Inventory"), g("Beginning Backorders")
             return max(0.0, d + t - bi + bb) if _f(t, bi, bb) else None
-        if kind == "level":
-            return pv.get("level_rate")
-        return None
+        return pv.get("level_rate") if kind == "level" else None
     if col == "Workers":
         if kind == "chase":
             cap, pr = pv.get("capacity"), g("Regular Production")
             return float(math.ceil(pr / cap - 1e-9)) if _f(cap, pr) and cap else None
-        if kind == "level":
-            return pv.get("level_workers")
-        return None
+        return pv.get("level_workers") if kind == "level" else None
     if col == "Regular Capacity":
         cap, w = pv.get("capacity"), g("Workers")
         return w * cap if _f(cap, w) else None
@@ -387,58 +458,50 @@ def _local(kind: str, col: str, i: int, v: Dict[str, List[Optional[float]]],
                "Backorder Cost": ("Ending Backorders", "backorder_cost")}
     if col in rate_of:
         q, k = rate_of[col]
-        x = g(q) if q in v else 0.0
+        x = g(q)
         if x is None and q in ("Overtime Production", "Subcontract Production"):
             x = 0.0
         return x * float(p[k]) if x is not None else None
     if col == "Total Cost":
-        parts = [g(c) for c in ("Labor Cost", "Hiring Cost", "Layoff Cost", "Overtime Cost",
-                                "Subcontract Cost", "Holding Cost", "Backorder Cost") if c in v]
-        return sum(parts) if _f(*parts) else None
+        parts = [g(c) for c in L.COST_CONCEPTS[:-1] if c in v]
+        return sum(parts) if parts and _f(*parts) else None
     return None
 
 
-def _extra_hint(kind: str, col: str, i: int, v, pv, scn: Scenario, cell: Cell):
-    """Targeted hints for the most common Excel/planning mistakes."""
-    def hint(x: float) -> str:
-        f = (cell.formula or "").upper()
-        if i > 0 and f and _LOCK_RE.search(f):
-            m = _LOCK_RE.search(f)
-            return (f"Your formula uses {m.group(0)} without $ signs, so filling down moved it. "
-                    f"Lock it: ${m.group(1)}${m.group(2)}.")
-        if col == "Workers" and kind == "chase":
-            pr, cap = v["Regular Production"][i], pv.get("capacity")
-            if _f(pr, cap) and cap:
-                raw = pr / cap
-                if abs(x - raw) < 0.01 and abs(raw - round(raw)) > 0.01:
-                    return "Workers must be whole: round UP with ROUNDUP(…, 0)."
-                if abs(x - math.floor(raw)) < 0.01 and raw > math.floor(raw) + 1e-9:
-                    return "Rounding down leaves you short of capacity; use ROUNDUP."
-        if col in ("Ending Inventory", "Ending Backorders") and x < -1e-9:
-            return ("This can't be negative. Wrap it in MAX(0, …) — a shortage belongs in "
-                    "Ending Backorders, extra stock in Ending Inventory.")
-        if col in ("Hires", "Layoffs") and i == 0:
-            return f"January compares with StartWorkers ({scn['starting_workforce']:,.0f})."
-        if col == "Beginning Inventory" and i == 0:
-            return "January starts with BeginInv."
-        return ""
-    return hint
+def _judge_decision(cell: Cell, concept: str) -> str:
+    if cell.blank:
+        return "decision" if concept in ("Overtime Production", "Subcontract Production") else "blank"
+    if cell.formula is not None and cell.value is None:
+        return "uncalc"
+    x = _num(cell)
+    if x is None:
+        return "text"
+    return "wrong" if x < 0 else "decision"
 
 
-def _grade_plan(book: Book, scn: Scenario, kind: str, key_df: pd.DataFrame,
-                require_formula: bool) -> SheetResult:
+def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
     sheet = L.PLAN_SHEETS[kind]
-    res = SheetResult(kind, sheet)
-    v = _plan_values(book, kind)
-    pv = _planning_values(book, kind)
-    rules = text.column_rules(kind)
+    require = bool(scn.params.get("require_formulas", True))
+    pr = read_plan(book, scn, kind)
+    cm = pr.cm
+    for letter, heading in cm.headings.items():
+        res.columns.append((letter, heading, cm.read_as.get(letter)))
+    for concept in cm.missing(kind):
+        res.notes.append(ColumnNote("missing", concept))
+    for concept, letters in cm.duplicates.items():
+        res.notes.append(ColumnNote("duplicate", concept, tuple(letters)))
+    for concept, letter in cm.guessed.items():
+        res.notes.append(ColumnNote("guessed", concept, (letter,), cm.headings.get(letter, "")))
+    for letter in cm.unknown:
+        res.notes.append(ColumnNote("unknown", "", (letter,), cm.headings.get(letter, "")))
 
     # planning cells
-    key_pv = {"capacity": scn.cap_month, "target": scn.target,
-              "total_demand": scn.total_demand, "level_rate": engine.level_rate(scn),
-              "level_workers": engine.workers_for(scn, engine.level_rate(scn)),
+    lr = engine.level_rate(scn)
+    key_pv = {"capacity": scn.cap_month, "target": scn.target, "total_demand": scn.total_demand,
+              "level_rate": lr, "level_workers": engine.workers_for(scn, lr),
               "ot_limit": scn.cap_month * float(scn["overtime_pct"])}
-    for pc in L.PLANNING[kind][2]:
+    pv = pr.planning
+    for pc in L.PLANNING[kind]:
         ref = L.planning_ref(kind, pc.key)
         cell = book.cell(sheet, ref)
         local = None
@@ -448,196 +511,153 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, key_df: pd.DataFrame,
             local = float(math.ceil(pv["level_rate"] / pv["capacity"] - 1e-9))
         elif pc.key == "ot_limit" and pv.get("capacity") is not None:
             local = pv["capacity"] * float(scn["overtime_pct"])
-        st, msg = _judge(cell, key_pv[pc.key], local, _tol(pc.key), require_formula,
-                         text.PLANNING_RULES[pc.key])
-        res.cells.append(CellCheck(sheet, ref, pc.label, pc.label, "Planning", st, msg,
-                                   _shown(cell)))
+        st = _judge(cell, key_pv[pc.key], local, _tol(pc.key), require)
+        res.cells.append(CellCheck(sheet, ref, f"plan:{pc.key}", pc.label, "Planning", pc.label,
+                                   st, _shown(cell)))
 
-    # monthly grid, month by month so the first problem listed is the earliest one
+    if pr.key is None:
+        res.messages.append("Fill every month of your Workers and Regular Production decision "
+                            "columns with numbers (0 or more) — then the rest of the sheet can "
+                            "be checked.")
+    order = sorted(cm.by_concept.items(), key=lambda kv: column_index_from_string(kv[1]))
     for i in range(L.N_MONTHS):
-        for col in L.PLAN_COLUMNS[kind]:
-            if col.kind == "given":
-                continue
-            ref = L.cell_ref(kind, col.engine, i)
+        for concept, letter in order:
+            ref = f"{letter}{L.month_row(i)}"
             cell = book.cell(sheet, ref)
-            label = f"{col.heading.rstrip(' ✎')}, {scn.months[i]}"
-            if col.kind == "decision":
-                st, msg = _judge_decision(cell, col.engine)
-            else:
-                key = float(key_df[col.engine].iloc[i])
-                local = _local(kind, col.engine, i, v, pv, scn)
-                st, msg = _judge(cell, key, local, _tol(col.engine), require_formula,
-                                 rules.get(col.engine, ""),
-                                 _extra_hint(kind, col.engine, i, v, pv, scn, cell))
-            res.cells.append(CellCheck(sheet, ref, label, col.heading, scn.months[i], st, msg,
-                                       _shown(cell)))
-    # totals
-    for col in L.PLAN_COLUMNS[kind]:
-        if not col.total:
-            continue
-        ref = L.total_ref(kind, col.engine)
-        cell = book.cell(sheet, ref)
-        vals = v[col.engine]
-        if col.kind == "decision":
-            vals = [x if x is not None else (0.0 if col.engine != "Regular Production" else None)
-                    for x in vals]
-        local = sum(vals) if _f(*vals) else None
-        st, msg = _judge(cell, float(key_df[col.engine].sum()), local, 0.5, require_formula,
-                         text.TOTAL_RULE)
-        res.cells.append(CellCheck(sheet, ref, f"{col.heading.rstrip(' ✎')}, total", col.heading,
-                                   "Total", st, msg, _shown(cell)))
-    return res
-
-
-def _judge_decision(cell: Cell, engine_name: str) -> Tuple[str, str]:
-    if cell.blank:
-        if engine_name in ("Overtime Production", "Subcontract Production"):
-            return "decision", ""                         # blank = none used
-        return "blank", "Enter your decision for this month."
-    if cell.formula is not None and cell.value is None:
-        return "uncalc", STATUS_HELP["uncalc"]
-    x = _num(cell)
-    if x is None:
-        return "text", "Your decision must be a number."
-    if x < 0:
-        return "wrong", "A decision can't be negative."
-    return "decision", ""
-
-
-def _grade_decisions(book: Book, scn: Scenario) -> List[CellCheck]:
-    out = []
-    for i in range(L.N_MONTHS):
-        for col in L.PLAN_COLUMNS["hybrid"]:
-            if col.kind != "decision":
+            col_label = f"{letter} · {cm.headings[letter]}"
+            label = f"{cm.headings[letter]}, {scn.months[i]}"
+            if kind == "hybrid" and concept in L.DECISIONS:
+                st, diag = _judge_decision(cell, concept), ""
+            elif pr.key is None:
                 continue
-            ref = L.cell_ref("hybrid", col.engine, i)
-            cell = book.cell(L.SHEET_HYBRID, ref)
-            st, msg = _judge_decision(cell, col.engine)
-            out.append(CellCheck(L.SHEET_HYBRID, ref, f"{col.heading.rstrip(' ✎')}, "
-                                 f"{scn.months[i]}", col.heading, scn.months[i], st, msg,
-                                 _shown(cell)))
-    return out
-
-
-def _hybrid_decision(book: Book) -> Optional[Decision]:
-    v = _plan_values(book, "hybrid")
-    w, r = v["Workers"], v["Regular Production"]
-    if not (_f(*w) and _f(*r)):
-        return None
-    ot = [x or 0.0 for x in v["Overtime Production"]]
-    sub = [x or 0.0 for x in v["Subcontract Production"]]
-    if any(x < 0 for x in w + r + ot + sub):
-        return None
-    return Decision(w, r, ot, sub)
-
-
-def _hybrid_attempted(book: Book) -> bool:
-    sheet = L.SHEET_HYBRID
-    for name in ("Workers", "Regular Production", "Overtime Production", "Subcontract Production"):
-        for i in range(L.N_MONTHS):
-            if not book.cell(sheet, L.cell_ref("hybrid", name, i)).blank:
-                return True
-    return False
+            else:
+                st = _judge(cell, float(pr.key[concept].iloc[i]),
+                            _local(kind, concept, i, pr.values, pv, scn), _tol(concept), require)
+                diag = (_diag(kind, concept, i, cell, pr.values, pv, scn)
+                        if st in ("wrong", "error") else "")
+            res.cells.append(CellCheck(sheet, ref, concept, label, scn.months[i], col_label, st,
+                                       _shown(cell), diag))
+    if pr.key is None:
+        return
+    for concept, letter in order:
+        if concept not in L.COST_CONCEPTS and concept not in L.TOTAL_OPTIONAL:
+            continue
+        ref = f"{letter}{L.TOTAL_ROW}"
+        cell = book.cell(sheet, ref)
+        if cell.blank and concept not in L.COST_CONCEPTS:
+            continue                                       # optional total, not built
+        vals = pr.values[concept]
+        if kind == "hybrid" and concept in ("Overtime Production", "Subcontract Production"):
+            vals = [x or 0.0 for x in vals]
+        st = _judge(cell, float(pr.key[concept].sum()), sum(vals) if _f(*vals) else None,
+                    0.5, require)
+        res.cells.append(CellCheck(sheet, ref, "total", f"{cm.headings[letter]}, year total",
+                                   "Total", f"{letter} · {cm.headings[letter]}", st, _shown(cell)))
+    res.metrics[kind] = engine.summarize(pr.key)
+    if kind == "hybrid":
+        res.feasibility = engine.check_feasibility(pr.key, scn)
+        res.must_be_feasible = True
 
 
 # =========================================================================================
 # Summary sheet
 # =========================================================================================
-def _student_metric(kind: str, metric: str, book: Book) -> Optional[float]:
-    """The value this Summary cell should show given the student's own plan sheet."""
-    sheet = L.PLAN_SHEETS[kind]
-    v = _plan_values(book, kind)
+_SUMMARY_OWN_HINTS = ("Total Hires", "Total Layoffs", "Peak Workforce", "Peak Inventory",
+                      "Months With Backorders")
+
+
+def _student_metric(pr: PlanRead, book: Book, kind: str, metric: str) -> Optional[float]:
+    v = pr.values
     if metric == "Peak Workforce":
-        return max(v["Workers"]) if _f(*v["Workers"]) else None
+        return max(v["Workers"]) if "Workers" in v and _f(*v["Workers"]) else None
     if metric == "Peak Inventory":
-        return max(v["Ending Inventory"]) if _f(*v["Ending Inventory"]) else None
+        x = v.get("Ending Inventory")
+        return max(x) if x and _f(*x) else None
     if metric == "Months With Backorders":
-        b = v["Ending Backorders"]
-        return float(sum(x > 1e-6 for x in b)) if _f(*b) else None
+        b = v.get("Ending Backorders")
+        return float(sum(x > 1e-6 for x in b)) if b and _f(*b) else None
     col = {"Total Hires": "Hires", "Total Layoffs": "Layoffs"}.get(metric, metric)
-    return _num(book.cell(sheet, L.total_ref(kind, col)))
+    letter = pr.cm.by_concept.get(col)
+    if not letter:
+        return None
+    total = _num(book.cell(L.PLAN_SHEETS[kind], f"{letter}{L.TOTAL_ROW}"))
+    if total is None and _f(*v[col]):
+        total = sum(v[col])
+    return total
 
 
-def _grade_summary(book: Book, scn: Scenario, keys: Dict[str, Dict[str, float]],
-                   kinds: List[str], require_formula: bool, result: CheckResult) -> SheetResult:
+def _grade_summary(book: Book, scn: Scenario, res: PieceResult) -> None:
     sheet = L.SHEET_SUMMARY
-    res = SheetResult("summary", sheet)
+    require = bool(scn.params.get("require_formulas", True))
+    kinds = ["chase", "level"] + (["hybrid"] if scn.params.get("include_hybrid", True) else [])
+    reads = {k: read_plan(book, scn, k) for k in kinds}
+    keys = {}
+    for k in kinds:
+        if reads[k].key is None:
+            res.messages.append("Your hybrid plan's decisions can't be read any more — fix the "
+                                "Hybrid Plan sheet first.")
+            continue
+        keys[k] = engine.summarize(reads[k].key)
+    res.metrics = keys
     for row in L.SUMMARY_ROWS:
         r = L.summary_row(row.metric)
         for kind in kinds:
-            if row.hybrid_only and kind != "hybrid":
+            if (row.hybrid_only and kind != "hybrid") or kind not in keys:
                 continue
             ref = f"{L.SUMMARY_PLAN_COL[kind]}{r}"
             cell = book.cell(sheet, ref)
-            rule = text.SUMMARY_RULES.get(row.metric, text.SUMMARY_RULES["link"])
-            st, msg = _judge(cell, keys[kind][row.metric], _student_metric(kind, row.metric, book),
-                             _tol(row.metric), require_formula, rule)
-            res.cells.append(CellCheck(sheet, ref, f"{row.label} ({L.PLAN_LABEL[kind]})",
-                                       L.PLAN_LABEL[kind], row.label, st, msg, _shown(cell)))
+            item = "summary:" + (row.metric if row.metric in _SUMMARY_OWN_HINTS else "link")
+            st = _judge(cell, keys[kind][row.metric],
+                        _student_metric(reads[kind], book, kind, row.metric), _tol(row.metric),
+                        require)
+            res.cells.append(CellCheck(sheet, ref, item, f"{row.label} ({L.PLAN_LABEL[kind]})",
+                                       row.label, L.PLAN_LABEL[kind], st, _shown(cell)))
     tc = L.summary_row("Total Cost")
     kc, kl = keys["chase"]["Total Cost"], keys["level"]["Total Cost"]
     sc, sl = _num(book.cell(sheet, f"B{tc}")), _num(book.cell(sheet, f"C{tc}"))
 
-    # lower-cost plan (text from an IF formula)
     cell = book.cell(sheet, L.LOWER_COST_CELL)
     want = {"chase", "level"} if abs(kc - kl) < 0.5 else ({"chase"} if kc < kl else {"level"})
     local = None
     if _f(sc, sl):
         local = {"chase", "level"} if abs(sc - sl) < 0.5 else ({"chase"} if sc < sl else {"level"})
     if cell.blank:
-        st, msg = "blank", "Use " + text.SUMMARY_RULES["lower"]
+        st = "blank"
     elif cell.formula is not None and cell.value is None:
-        st, msg = "uncalc", STATUS_HELP["uncalc"]
+        st = "uncalc"
     else:
         got = str(cell.value).strip().lower()
         if _ERR_RE.match(got.upper()):
-            st, msg = "error", STATUS_HELP["error"]
+            st = "error"
         elif got in want:
-            st, msg = ("typed", "Right answer, but typed. Let Excel decide: "
-                       + text.SUMMARY_RULES["lower"]) if require_formula and cell.formula is None else ("ok", "")
+            st = "typed" if require and cell.formula is None else "ok"
         elif local and got in local:
-            st, msg = "carried", STATUS_HELP["carried"]
+            st = "carried"
         else:
-            st, msg = "wrong", "Show the plan with the LOWER total cost: " + text.SUMMARY_RULES["lower"]
-    res.cells.append(CellCheck(sheet, L.LOWER_COST_CELL, "Lower-cost plan", "Answer",
-                               "Lower-cost plan", st, msg, _shown(cell)))
-
+            st = "wrong"
+    res.cells.append(CellCheck(sheet, L.LOWER_COST_CELL, "summary:lower", "Lower-cost plan",
+                               "Lower-cost plan", "Answer", st, _shown(cell)))
     cell = book.cell(sheet, L.SAVINGS_CELL)
-    st, msg = _judge(cell, abs(kc - kl), abs(sc - sl) if _f(sc, sl) else None, 0.5,
-                     require_formula, text.SUMMARY_RULES["savings"])
-    res.cells.append(CellCheck(sheet, L.SAVINGS_CELL, "Savings of the lower-cost plan", "Answer",
-                               "Savings", st, msg, _shown(cell)))
+    st = _judge(cell, abs(kc - kl), abs(sc - sl) if _f(sc, sl) else None, 0.5, require)
+    res.cells.append(CellCheck(sheet, L.SAVINGS_CELL, "summary:savings", "Savings",
+                               "Savings", "Answer", st, _shown(cell)))
 
-    # recommendation + justification (judgement, not graded for content)
-    allowed = ["Chase", "Level"] + (["Hybrid"] if scn.params.get("include_hybrid", True) else [])
+    allowed = [L.PLAN_LABEL[k] for k in kinds]
     cell = book.cell(sheet, L.RECOMMEND_CELL)
     rec = str(cell.value or "").strip()
     match = next((a for a in allowed if a.lower() == rec.lower()), "")
-    result.recommendation = match
-    if cell.blank:
-        st, msg = "blank", "Choose your recommendation from the drop-down list."
-    elif not match:
-        st, msg = "wrong", f"Choose one of: {', '.join(allowed)}."
-    else:
-        st, msg = "ok", ""
-    res.cells.append(CellCheck(sheet, L.RECOMMEND_CELL, "Your recommendation", "Answer",
-                               "Recommendation", st, msg, rec))
-
+    res.recommendation = match
+    st = "blank" if cell.blank else ("ok" if match else "wrong")
+    res.cells.append(CellCheck(sheet, L.RECOMMEND_CELL, "summary:recommend", "Your recommendation",
+                               "Recommendation", "Answer", st, rec))
     cell = book.cell(sheet, L.JUSTIFY_CELL)
     just = str(cell.value or "").strip() if not isinstance(cell.value, (int, float)) else ""
     words = len(re.findall(r"[A-Za-z0-9$%][\w$%.,'’-]*", just))
-    result.justification, result.words = just, words
     need = int(scn.params.get("min_justification_words", 0) or 0)
-    result.min_words = need
-    if not just:
-        st, msg = "blank", "Write your justification in the large box."
-    elif words < need:
-        st, msg = "wrong", f"{words} words so far; write at least {need}."
-    else:
-        st, msg = "ok", ""
-    res.cells.append(CellCheck(sheet, L.JUSTIFY_CELL, "Justification", "Answer",
-                               "Justification", st, msg, f"{words} words"))
-    return res
+    res.justification, res.words, res.min_words = just, words, need
+    st = "blank" if not just else ("wrong" if words < need else "ok")
+    res.cells.append(CellCheck(sheet, L.JUSTIFY_CELL, "summary:justify", "Justification",
+                               "Justification", "Answer", st, f"{words} words"))
 
 
 # =========================================================================================
@@ -647,114 +667,67 @@ def check_identity(book: Book, scn: Scenario, expected_sid: Optional[str]) -> Li
     m = book.meta
     if m.get("app") != APP_ID:
         return ["This doesn't look like an Aggregate Anxiety workbook from this app (its hidden "
-                "identification sheet is missing). Upload the workbook you downloaded in step 2, "
-                "or download a fresh one and copy your formulas into it."]
+                "identification sheet is missing). Upload the workbook you downloaded, or "
+                "download a fresh one and copy your work into it."]
     out = []
     if m.get("model_version", "").split(".")[0] != MODEL_VERSION.split(".")[0]:
         out.append("This workbook was made by a different version of the app. Download a fresh "
-                   "workbook in step 2 and copy your work into it.")
+                   "workbook and copy your work into it.")
     if expected_sid and m.get("student_id", "") != expected_sid:
         out.append(f"This workbook belongs to student ID '{m.get('student_id', '')}', not "
                    f"'{expected_sid}'. Upload your own workbook.")
     if str(m.get("seed", "")) != str(scn.seed) or m.get("config_hash") != scn.config_hash:
         out.append("This workbook was made for a different scenario than the one you are signed "
                    "in with (or your instructor changed the assignment). Download your workbook "
-                   "again in step 2 and copy your formulas into it.")
+                   "again and copy your work into it.")
     return out
 
 
-def _check_given(book: Book, scn: Scenario, kinds: List[str]) -> List[str]:
-    out = []
-    for kind in kinds:
-        sheet = L.PLAN_SHEETS[kind]
-        if sheet not in book.sheets:
-            out.append(f"The '{sheet}' sheet is missing or was renamed. Keep the sheet names as "
-                       "they were.")
-            continue
-        for i, d in enumerate(scn.demand):
-            ref = f"B{L.month_row(i)}"
-            if not _close(_num(book.cell(sheet, ref)), float(d), 1e-6):
-                out.append(f"{sheet} {ref}: the demand for {scn.months[i]} was changed. Put back "
-                           f"{d:,.0f} (given data must not change).")
-                break
-    if L.SHEET_SUMMARY not in book.sheets:
-        out.append("The 'Summary' sheet is missing or was renamed.")
-    return out
-
-
-def check_book(book: Book, scn: Scenario, expected_sid: Optional[str] = None) -> CheckResult:
-    res = CheckResult(meta=dict(book.meta), sha256=book.sha256)
+def check_book(book: Book, scn: Scenario, piece: str,
+               expected_sid: Optional[str] = None) -> PieceResult:
+    res = PieceResult(piece, PIECE_TITLES[piece], sha256=book.sha256)
     res.fatal = check_identity(book, scn, expected_sid)
-    include_hybrid = bool(scn.params.get("include_hybrid", True))
-    kinds = ["chase", "level"]
-    if not res.fatal:
-        res.fatal = _check_given(book, scn, kinds)
     if res.fatal:
         return res
-    require = bool(scn.params.get("require_formulas", True))
-
-    keys: Dict[str, Dict[str, float]] = {}
-    for kind in kinds:
-        df = engine.reference_plan(scn, kind)
-        keys[kind] = engine.summarize(df)
-        res.sheets[kind] = _grade_plan(book, scn, kind, df, require)
-
-    sum_kinds = list(kinds)
-    if include_hybrid and L.SHEET_HYBRID in book.sheets and _hybrid_attempted(book):
-        dec = _hybrid_decision(book)
-        if dec is None:
-            hs = SheetResult("hybrid", L.SHEET_HYBRID, required=False)
-            hs.notes.append("Fill every month's Workers and Regular Production (green cells) "
-                            "with numbers ≥ 0; then the rest of the sheet can be checked.")
-            hs.cells = [c for c in _grade_decisions(book, scn)]
-            res.sheets["hybrid"] = hs
-        else:
-            df = engine.simulate(scn, dec)
-            keys["hybrid"] = engine.summarize(df)
-            hs = _grade_plan(book, scn, "hybrid", df, require)
-            hs.required = False
-            res.hybrid_feasibility = engine.check_feasibility(df, scn)
-            res.sheets["hybrid"] = hs
-            sum_kinds.append("hybrid")
-    elif include_hybrid:
-        res.sheets["hybrid"] = SheetResult("hybrid", L.SHEET_HYBRID, required=False,
-                                           attempted=False,
-                                           notes=["Optional — not started."])
-    summ = _grade_summary(book, scn, keys, sum_kinds, require, res)
-    if "hybrid" in sum_kinds:          # optional work must not block the required Summary
-        hyb = [c for c in summ.cells if c.group == L.PLAN_LABEL["hybrid"]]
-        summ.cells = [c for c in summ.cells if c.group != L.PLAN_LABEL["hybrid"]]
-        res.sheets["hybrid"].cells.extend(hyb)
-    res.sheets["summary"] = summ
-    if res.recommendation == "Hybrid" and "hybrid" in res.sheets:
-        res.sheets["hybrid"].required = True
-        res.sheets["hybrid"].notes.append("You recommend the hybrid plan, so it must be complete "
-                                          "and correct too.")
-    res.plan_totals = keys
-    res.uncalculated = any(c.status == "uncalc" for s in res.sheets.values() for c in s.cells)
+    sheet = L.SHEET_SUMMARY if piece == "summary" else L.PLAN_SHEETS[piece]
+    if sheet not in book.sheets:
+        res.fatal.append(f"The '{sheet}' sheet is missing or was renamed. Keep the sheet names "
+                         "as they were.")
+        return res
+    for kind in (["chase", "level"] if piece == "summary" else [piece]):
+        s = L.PLAN_SHEETS[kind]
+        for i, d in enumerate(scn.demand):
+            if not _close(_num(book.cell(s, f"B{L.month_row(i)}")), float(d), 1e-6):
+                res.fatal.append(f"{s} B{L.month_row(i)}: the demand for {scn.months[i]} was "
+                                 f"changed. Put back {d:,.0f} (given data must not change).")
+                return res
+    if piece == "summary":
+        _grade_summary(book, scn, res)
+    else:
+        _grade_plan(book, scn, piece, res)
     return res
 
 
-def check_workbook(data: bytes, scn: Scenario, expected_sid: Optional[str] = None) -> CheckResult:
+def check_piece(data: bytes, scn: Scenario, piece: str,
+                expected_sid: Optional[str] = None) -> PieceResult:
     book, err = read_book(data)
     if err:
-        return CheckResult(fatal=[err], sha256=hashlib.sha256(data or b"").hexdigest())
-    return check_book(book, scn, expected_sid)
+        return PieceResult(piece, PIECE_TITLES[piece], fatal=[err],
+                           sha256=hashlib.sha256(data or b"").hexdigest())
+    return check_book(book, scn, piece, expected_sid)
 
 
-def grid(sheet: SheetResult) -> pd.DataFrame:
-    """Status grid for display: rows = months/total/planning, columns = headings."""
-    rows: Dict[str, Dict[str, str]] = {}
-    order: List[str] = []
-    cols: List[str] = []
-    for c in sheet.cells:
-        if c.row_label == "Planning" or c.sheet != sheet.title:
+def grid(res: PieceResult) -> pd.DataFrame:
+    """Cells for display: rows = months + Total, columns = the student's columns."""
+    rows: Dict[str, Dict[str, CellCheck]] = {}
+    order, cols = [], []
+    for c in res.cells:
+        if c.row_label == "Planning" or c.sheet == L.SHEET_SUMMARY:
             continue
         if c.row_label not in rows:
             rows[c.row_label] = {}
             order.append(c.row_label)
-        if c.group not in cols:
-            cols.append(c.group)
-        rows[c.row_label][c.group] = c.status
-    df = pd.DataFrame([rows[r] for r in order], index=order, columns=cols)
-    return df.fillna("")
+        if c.col_label not in cols:
+            cols.append(c.col_label)
+        rows[c.row_label][c.col_label] = c
+    return pd.DataFrame([rows[r] for r in order], index=order, columns=cols)

@@ -24,18 +24,33 @@ def test_sheets_names_and_meta():
         assert name in wb.defined_names
 
 
-def test_student_cells_are_empty_unlocked_and_given_cells_locked():
+def test_students_design_the_columns():
+    """Only Month and Demand are given; headings, formulas and totals are the student's."""
     s, wb = _wb()
     ws = wb[L.SHEET_CHASE]
     assert ws.protection.sheet
+    assert ws["A1"].value == "Month" and ws["B1"].value == "Demand"
+    for j in range(L.FIRST_STUDENT_COL, L.LAST_STUDENT_COL + 1):
+        for r in [1] + [L.month_row(i) for i in range(12)] + [L.TOTAL_ROW]:
+            c = ws.cell(row=r, column=j)
+            assert c.value is None and not c.protection.locked
     for i in range(12):
         given = ws[f"B{L.month_row(i)}"]
         assert given.value == s.demand[i] and given.protection.locked
-        for col in L.PLAN_COLUMNS["chase"][2:]:
-            c = ws[L.cell_ref("chase", col.engine, i)]
-            assert c.value is None and not c.protection.locked
-    assert ws["S2"].value is None and not ws["S2"].protection.locked
-    assert not wb[L.SHEET_SUMMARY][L.JUSTIFY_CELL].protection.locked
+    for pc in L.PLANNING["level"]:
+        c = wb[L.SHEET_LEVEL][L.planning_ref("level", pc.key)]
+        assert c.value is None and not c.protection.locked
+
+
+def test_no_rules_or_formulas_are_given_away():
+    _, wb = _wb()
+    for name in (L.SHEET_START, L.SHEET_CHASE, L.SHEET_LEVEL, L.SHEET_HYBRID, L.SHEET_SUMMARY,
+                 L.SHEET_HELP):
+        for row in wb[name].iter_rows():
+            for c in row:
+                v = str(c.value or "")
+                assert "ROUNDUP(Production" not in v and "MAX(0, Demand" not in v, (name, c.coordinate)
+                assert "Beginning Inventory +" not in v, (name, c.coordinate)
 
 
 def test_hybrid_sheet_optional():
@@ -43,10 +58,11 @@ def test_hybrid_sheet_optional():
     assert L.SHEET_HYBRID not in wb.sheetnames
 
 
-def test_solution_writes_formulas():
+def test_solution_writes_headings_and_formulas():
     _, wb = _wb(solution=True)
     ws = wb[L.SHEET_LEVEL]
-    assert ws["E5"].value == "=$S$5" and ws["S6"].value == "=ROUNDUP(S5/S2,0)"
+    assert ws["C1"].value == "Beginning Inventory" and ws["E1"].value == "Production"
+    assert ws["E5"].value == "=$C$20"
     assert wb[L.SHEET_SUMMARY][L.LOWER_COST_CELL].value.startswith("=IF(")
     assert wb[L.SHEET_SUMMARY][L.RECOMMEND_CELL].value == "Chase"
 
