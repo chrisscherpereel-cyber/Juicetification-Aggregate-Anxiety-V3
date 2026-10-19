@@ -17,7 +17,7 @@ peak. Each student ID produces its own reproducible demand forecast, so answers 
 | **1 · Scenario & workbook** | Signs in, studies the demand forecast and the planning policies, and downloads a personal `.xlsx` built for the policies set in the sidebar. |
 | **2 · Chase plan** | Designs the chase worksheet, uploads, fixes, re-uploads; submits when it is all correct. |
 | **3 · Level plan** | Opens once the chase plan is submitted. Same loop. |
-| **4 · Hybrid plan** | Opens after the level plan. **Guided** (default): a starting plan and questions that lead to a good solution. **Build it yourself**: the student designs the sheet. Either way the plan must be correct **and** respect every limit. |
+| **4 · Hybrid plan** | Opens after the level plan. **Guided** (default): a starting plan and questions that lead to a good solution. **Build it yourself**: the student designs the sheet. Either way the plan must be correct **and** respect every limit. Skipped when the hybrid is switched **off**. |
 | **5 · Compare & recommend** | The Summary sheet: each plan's yearly figures, the cheaper plan (`IF`), the savings (`ABS`), a recommendation and a written justification. |
 | **6 · Final report** | A PDF listing every piece. A DRAFT is available at any time. |
 
@@ -83,6 +83,50 @@ The results show a "What to work on" list (root causes only), the column check, 
 out like the student's own sheet: every column they built (helper columns shown as "not checked"),
 the totals row and the planning cells. Wide sheets such as the hybrid switch to vertical headings
 so all columns fit; hybrid columns wait (…) until the decisions are filled in.
+
+## Settings (sidebar)
+
+Three switches sit in the sidebar under **Settings**:
+
+| Switch | Options (default first) |
+|---|---|
+| **Safety stock** | *None* (EndTarget = 0) · *Keep the safety stock* (EndTarget = the safety-stock quantity) |
+| **Workforce** | *Whole workers* (round up; idle capacity is paid) · *Fractional workers* (capacity grows in small increments — part-time hours — with no rounding) |
+| **Hybrid plan** | *Guided walkthrough* · *Build it yourself* · *Off* (chase and level only) |
+
+The workbook, answer key, checker and hints follow the two policies. Those lock once the first
+piece is submitted (every piece must follow the same rules); changing them earlier asks the
+student to download the workbook again, and an upload made for other policies is refused with a
+message naming the switch. When the policy is *no safety stock*, the safety-stock figure is not
+shown anywhere.
+
+The hybrid switch can change until the hybrid (or the comparison) is submitted. **Off** removes
+the Hybrid step entirely: a newly downloaded workbook has no Hybrid Plan sheet or Hybrid column,
+the Summary is checked for chase and level only (an existing Hybrid column is ignored), the
+recommendation must be Chase or Level, and the final report leaves the hybrid out.
+
+Instructors who want fixed policies set `student_sets_policies=false`; `hybrid_mode` sets the
+hybrid default (`include_hybrid=false` removes the hybrid option altogether).
+
+## Planning policies (stated to students)
+
+The Scenario sheet, the Start Here sheet and step 1 of the app spell out the company's policies
+as business rules, not formulas:
+
+* **Safety stock** — either *none* (EndTarget = 0: the chase plan uses up the beginning stock
+  and ends each month at 0; the level plan ends December at 0) or *keep S bottles*
+  (EndTarget = S: every chase month aims to end with S; the level plan ends December with S;
+  the hybrid must end December with at least S). It also states that beginning inventory is
+  not the safety stock, that safety stock is a target customers can still draw on, and that it
+  costs holding like any other bottle.
+* **Backorders** — unfilled orders carry forward and are filled oldest-first; the year starts
+  owing `BeginBackorders` (given data with its own Excel name; 0 by default); every bottle
+  still owed at month end costs BackorderCost; stock is never negative.
+* **Workforce** — either *whole workers only* (a need of 10.2 workers means employing 11; the
+  idle capacity is still paid) or *fractional workers* (worker-equivalents, no rounding; costs
+  in proportion), plus how hires and layoffs are counted from StartWorkers.
+* **Overtime** costs OTCost for each bottle made on overtime — the full cost of that bottle;
+  regular labor pays only for regular-time capacity.
 
 ## The hybrid plan
 
@@ -177,7 +221,7 @@ form or by URL: `?cfg=<base64 json>`, `?game=<code>`, `?seed=<int>`, `?manifest=
 | `beginning_backorders` | 0 | orders still owed before January (`BeginBackorders`) |
 | `worker_policy` | `whole` | `partial` allows fractional workers (no rounding) |
 | `student_sets_policies` | true | students set the two policies in the sidebar |
-| `hybrid_mode` | `guided` | default hybrid mode (`guided` or `build`); students can switch |
+| `hybrid_mode` | `guided` | default hybrid mode (`guided`, `build` or `off`); students can switch |
 | `scenario_preset` | `standard` | `strong_seasonal`, `stability_favored`, `limited_flex`, `tight_storage` |
 | `include_hybrid` | true | include the Hybrid Plan piece |
 | `require_formulas` | true | a typed number in a calculated cell is not accepted |
