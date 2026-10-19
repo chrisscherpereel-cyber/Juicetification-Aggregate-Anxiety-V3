@@ -80,10 +80,7 @@ if identity.mode == "blocked":
     st.stop()
 
 INCLUDE_HYBRID = bool(resolve_scenario(CFG, 1).params.get("include_hybrid", True))
-PIECES = ["chase", "level"] + (["hybrid"] if INCLUDE_HYBRID else []) + ["summary"]
-STEPS = [("start", "Scenario & workbook")] + [(k, checker.PIECE_TITLES[k]) for k in PIECES] \
-    + [("report", "Final report")]
-STEP_KEYS = [k for k, _ in STEPS]
+ALL_PIECES = ["chase", "level", "hybrid", "summary"]
 GOALS = {
     "chase": "Change the workforce every month so that production follows demand. You'll "
              "carry almost no inventory, but you'll hire and lay off often.",
@@ -105,7 +102,7 @@ def new_piece() -> dict:
     return {"attempts": [], "help": {}, "colhelp": {}, "submitted": None}
 
 
-SS.setdefault("pieces", {k: new_piece() for k in PIECES})
+SS.setdefault("pieces", {k: new_piece() for k in ALL_PIECES})
 
 
 def seed_for(sid: str) -> int:
@@ -120,10 +117,21 @@ SS.setdefault("policy", {"safety_stock_policy": CFG.get("safety_stock_policy") o
                          "worker_policy": CFG.get("worker_policy") or "whole"})
 SS.setdefault("hybrid_mode", CFG.get("hybrid_mode") or "guided")
 
+# The hybrid plan is a piece only when the instructor allows it and the student hasn't
+# switched it off in the sidebar. Off = no Hybrid step, no hybrid on the Summary sheet,
+# no hybrid in the recommendation or the report.
+HYBRID_ON = INCLUDE_HYBRID and SS["hybrid_mode"] != "off"
+PIECES = ["chase", "level"] + (["hybrid"] if HYBRID_ON else []) + ["summary"]
+STEPS = [("start", "Scenario & workbook")] + [(k, checker.PIECE_TITLES[k]) for k in PIECES] \
+    + [("report", "Final report")]
+STEP_KEYS = [k for k, _ in STEPS]
+
 
 def policy_cfg() -> dict:
     """Instructor configuration plus the student's two policy switches (when allowed)."""
-    return {**CFG, **SS["policy"]} if STUDENT_SETS_POLICIES else dict(CFG)
+    cfg = {**CFG, **SS["policy"]} if STUDENT_SETS_POLICIES else dict(CFG)
+    cfg["include_hybrid"] = HYBRID_ON
+    return cfg
 
 
 def scenario():
@@ -182,13 +190,17 @@ def restore_state() -> None:
         return
     if STUDENT_SETS_POLICIES and isinstance(saved.get("policy"), dict):
         SS["policy"].update({k: v for k, v in saved["policy"].items() if k in POLICY_KEYS})
-    if saved.get("hybrid_mode") in ("guided", "build"):
+    mode_changed = False
+    if saved.get("hybrid_mode") in ("guided", "build", "off"):
+        mode_changed = saved["hybrid_mode"] != SS["hybrid_mode"]
         SS["hybrid_mode"] = saved["hybrid_mode"]
     scn = resolve_scenario(policy_cfg(), seed_for(URL_SID))
     if saved.get("config_hash") == scn.config_hash and isinstance(saved.get("pieces"), dict):
         SS["student"] = {"name": saved.get("name") or URL_SID, "sid": URL_SID}
-        for k in PIECES:
+        for k in ALL_PIECES:
             SS["pieces"][k] = {**new_piece(), **saved["pieces"].get(k, {})}
+    if mode_changed:
+        st.rerun()                     # the list of steps depends on the hybrid switch
 
 
 restore_state()
@@ -233,12 +245,18 @@ def sidebar_settings() -> None:
     else:
         st.caption("Set the policies before you download your workbook — it is built for them.")
     if INCLUDE_HYBRID:
-        hm = {"guided": "Guided walkthrough", "build": "Build it yourself"}
+        hm = {"guided": "Guided walkthrough", "build": "Build it yourself",
+              "off": "Off — chase and level only"}
+        locked_h = submitted("hybrid") or submitted("summary")
         st.radio("Hybrid plan", list(hm), format_func=hm.get,
                  index=list(hm).index(SS["hybrid_mode"]), key="set_hybrid",
-                 disabled=submitted("hybrid"), on_change=_set_hybrid_mode,
+                 disabled=locked_h, on_change=_set_hybrid_mode,
                  help="Guided: you get a starting plan and questions that lead to a good "
-                      "solution. Build: you design the hybrid sheet yourself.")
+                      "solution. Build: you design the hybrid sheet yourself. Off: no hybrid "
+                      "plan — the comparison and recommendation cover chase and level only.")
+        if locked_h:
+            st.caption("Locked: your comparison is built on this choice."
+                       if submitted("summary") else "Locked: the hybrid plan is submitted.")
 
 
 with st.sidebar:
@@ -387,10 +405,10 @@ def page_start() -> None:
         md_table(pd.DataFrame(text.param_rows(scn), columns=["Item", "Value", "Unit"]))
     with c2:
         st.subheader("Your workbook")
-        if SS.get("wb_for") != (stu["sid"], scn.config_hash):
+        if SS.get("wb_for") != (stu["sid"], scn.config_hash, HYBRID_ON):
             SS["wb_bytes"] = workbook.build_workbook(scn, student_name=stu["name"],
                                                      student_id=stu["sid"], game=GAME)
-            SS["wb_for"] = (stu["sid"], scn.config_hash)
+            SS["wb_for"] = (stu["sid"], scn.config_hash, HYBRID_ON)
         got = SS.get("downloaded_hash")
         if got and got != scn.config_hash:
             st.warning("You changed a policy after downloading. **Download the workbook again** "
@@ -767,6 +785,10 @@ def show_guidance(key: str, scn) -> None:
         st.markdown("Fill the **Summary** sheet: each plan's yearly figures, which plan costs "
                     "less, the savings, your recommendation and why. Use formulas that point "
                     "at your plan sheets.")
+        if INCLUDE_HYBRID and not HYBRID_ON:
+            st.info("The hybrid plan is **off**, so the comparison covers the chase and level "
+                    "plans only. If your Summary sheet has a Hybrid column, leave it empty — it "
+                    "isn't checked — and recommend **Chase** or **Level**.")
     else:
         with st.expander("① Design your columns", expanded=not ps["attempts"]):
             st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet, only Month and Demand are given. "
@@ -999,7 +1021,7 @@ def page_report() -> None:
                 "your progress.")
     if st.button("Create my final report (PDF)" if final else "Create a DRAFT report (PDF)",
                  type="primary" if final else "secondary"):
-        hyb = SS["pieces"].get("hybrid", {}).get("submitted") or {}
+        hyb = (SS["pieces"]["hybrid"].get("submitted") or {}) if HYBRID_ON else {}
         pdf, rid = report.build_report(
             scn, student_name=stu["name"], student_id=stu["sid"], identity_label=identity.label,
             pieces=recs, final=final, heading="Final report" if final else "Progress report",
