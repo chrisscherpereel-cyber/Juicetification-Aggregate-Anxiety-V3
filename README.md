@@ -82,11 +82,31 @@ instructor, not a grade.
 The results show a "What to work on" list (root causes only), the column check, and a grid laid
 out like the student's own sheet.
 
+## Planning policies (stated to students)
+
+The Scenario sheet, the Start Here sheet and step 1 of the app spell out three company
+policies — as business rules, not formulas:
+
+* **Safety stock** — either *none* (EndTarget = 0: the chase plan uses up the beginning stock
+  and ends each month at 0; the level plan ends December at 0) or *keep S bottles*
+  (EndTarget = S: every chase month aims to end with S; the level plan ends December with S;
+  the hybrid must end December with at least S). It also states that beginning inventory is
+  not the safety stock, that safety stock is a target customers can still draw on, and that it
+  costs holding like any other bottle.
+* **Backorders** — unfilled orders carry forward and are filled oldest-first; the year starts
+  owing `BeginBackorders` (given data, with its own Excel name; 0 by default); every bottle
+  still owed at month end costs BackorderCost; stock is never negative.
+* **Workforce** — either *whole workers only* (a need of 10.2 workers means employing 11; the
+  idle capacity is still paid) or *fractional workers allowed* (worker-equivalents, no
+  rounding; costs in proportion), plus how hires and layoffs are counted from StartWorkers.
+
+The checker, answer key and hints all follow the same policies.
+
 ## Model rules
 
 ```
 Beginning Inventory  = last month's Ending Inventory     (January = BeginInv)
-Beginning Backorders = last month's Ending Backorders    (January = 0)
+Beginning Backorders = last month's Ending Backorders    (January = BeginBackorders)
 Ending Inventory     = MAX(0, Beg Inv + Production − Beg Backorders − Demand)
 Ending Backorders    = MAX(0, Demand + Beg Backorders − Beg Inv − Production)
 Hires   = MAX(0, Workers − last month's Workers)          (January vs StartWorkers)
@@ -94,8 +114,9 @@ Layoffs = MAX(0, last month's Workers − Workers)
 Costs   = quantity × rate;  Total Cost = sum of the month's costs
 Chase:  Production = MAX(0, Demand + EndTarget − Beg Inv + Beg Backorders)
         Workers    = ROUNDUP(Production ÷ capacity per worker, 0)
-Level:  Production = (total demand + EndTarget − BeginInv) ÷ 12, every month
+Level:  Production = (total demand + EndTarget − BeginInv + BeginBackorders) ÷ 12, every month
         Workers    = ROUNDUP(level production ÷ capacity per worker, 0), every month
+(worker_policy = partial: no ROUNDUP — fractional worker-equivalents)
 Hybrid: Workers, Regular, Overtime and Subcontract production are decisions;
         Total Production = Regular + Overtime + Subcontract
 ```
@@ -125,6 +146,8 @@ form or by URL: `?cfg=<base64 json>`, `?game=<code>`, `?seed=<int>`, `?manifest=
 |---|---|---|
 | demand, costs, capacity, inventory | as V2 | the planning data |
 | `safety_stock_policy` | `none` | `maintain` makes `EndTarget` = safety stock |
+| `beginning_backorders` | 0 | orders still owed before January (`BeginBackorders`) |
+| `worker_policy` | `whole` | `partial` allows fractional workers (no rounding) |
 | `scenario_preset` | `standard` | `strong_seasonal`, `stability_favored`, `limited_flex`, `tight_storage` |
 | `include_hybrid` | true | include the Hybrid Plan piece |
 | `require_formulas` | true | a typed number in a calculated cell is not accepted |
@@ -157,7 +180,8 @@ streamlit run app.py
 
 Tests: `pip install -r requirements-dev.txt && python -m pytest tests -q`. The checker tests run
 against workbooks **calculated by real Excel** in `tests/fixtures` — the answer key, a workbook
-with typical mistakes, and one whose chase columns are in a student's own order and wording.
+with typical mistakes, one whose chase columns are in a student's own order and wording,
+and one with every policy switched (safety stock kept, fractional workers, orders owed).
 After changing the workbook layout or the model, regenerate them on Windows with Excel:
 `python tests/make_fixtures.py`.
 

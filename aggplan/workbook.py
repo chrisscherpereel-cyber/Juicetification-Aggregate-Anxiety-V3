@@ -158,11 +158,17 @@ def _start_sheet(wb, scn: Scenario, name: str, sid: str):
         _put(ws, f"C{k}", label)
     r = r + len(legend) + 2
 
-    _put(ws, f"B{r}", "Your company's policy", font=H2)
-    _put(ws, f"B{r + 1}", text.target_sentence(scn), wrap=True)
-    ws.merge_cells(f"B{r + 1}:D{r + 1}")
-    ws.row_dimensions[r + 1].height = 32
-    r += 3
+    _put(ws, f"B{r}", "Your company's planning policies (every plan must follow them)", font=H2)
+    r += 1
+    for title, summary, details in text.policies(scn):
+        _put(ws, f"B{r}", title, font=BOLD, wrap=True)
+        for line in [summary] + details:
+            _put(ws, f"C{r}", f"• {line}", wrap=True)
+            ws.merge_cells(f"C{r}:D{r}")
+            ws.row_dimensions[r].height = 15 * (1 + len(line) // 110)
+            r += 1
+        r += 1
+    r += 1
     _put(ws, f"B{r}", "Questions every plan must answer, for each month", font=H2)
     for k, q in enumerate(hints.build_questions("chase"), start=1):
         _put(ws, f"B{r + k}", f"{k}.", align=Alignment(horizontal="right"))
@@ -201,6 +207,20 @@ def _scenario_sheet(wb, scn: Scenario):
         _put(ws, f"G{r}", nm, font=CODE, border=True)
         _put(ws, f"H{r}", unit, border=True)
         wb.defined_names[nm] = DefinedName(nm, attr_text=f"{L.SHEET_SCENARIO}!$F${r}")
+    r = 6 + len(NAME_KEYS) + 2
+    _put(ws, f"A{r}", "Planning policies — how your company handles safety stock, backorders "
+                      "and workers", font=H2)
+    r += 1
+    for title, summary, details in text.policies(scn):
+        _put(ws, f"A{r}", title, font=HEAD_FONT, fill=HEAD_FILL)
+        ws.merge_cells(f"A{r}:H{r}")
+        r += 1
+        for line in [summary] + details:
+            _put(ws, f"A{r}", f"• {line}", wrap=True)
+            ws.merge_cells(f"A{r}:H{r}")
+            ws.row_dimensions[r].height = 15 * (1 + len(line) // 140)   # merged: no auto-fit
+            r += 1
+        r += 1
     for col, w in zip("ABCDEFGH", [13, 17, 3, 3, 66, 13, 17, 16]):
         ws.column_dimensions[col].width = w
     _protect(ws)
@@ -409,8 +429,10 @@ def _fill_plan(ws, scn: Scenario, kind: str, columns: ColumnSpec, hybrid: Option
     if kind == "level":
         td, tg, lr = (L.planning_ref(kind, k) for k in ("total_demand", "target", "level_rate"))
         ws[td] = "=SUM(B2:B13)"
-        ws[lr] = f"=({td}+{tg}-BeginInv)/12"
-        ws[L.planning_ref(kind, "level_workers")] = f"=ROUNDUP({lr}/{L.planning_ref(kind, 'capacity')},0)"
+        ws[lr] = f"=({td}+{tg}-BeginInv+BeginBackorders)/12"
+        need = f"{lr}/{L.planning_ref(kind, 'capacity')}"
+        ws[L.planning_ref(kind, "level_workers")] = (f"=ROUNDUP({need},0)" if scn.whole_workers
+                                                     else f"={need}")
     if kind == "hybrid":
         ws[L.planning_ref(kind, "ot_limit")] = f"={L.planning_ref(kind, 'capacity')}*OTLimitPct"
     absref = lambda ref: f"${ref[0]}${ref[1:]}"                          # noqa: E731
@@ -420,12 +442,14 @@ def _fill_plan(ws, scn: Scenario, kind: str, columns: ColumnSpec, hybrid: Option
         g = lambda c: f"{col[c]}{r}"                                       # noqa: E731
         f: Dict[str, object] = {}
         f["Beginning Inventory"] = "=BeginInv" if i == 0 else f"={col['Ending Inventory']}{p}"
-        f["Beginning Backorders"] = "=0" if i == 0 else f"={col['Ending Backorders']}{p}"
+        f["Beginning Backorders"] = ("=BeginBackorders" if i == 0
+                                     else f"={col['Ending Backorders']}{p}")
         wprev = "StartWorkers" if i == 0 else f"{col['Workers']}{p}"
         if kind == "chase":
             f["Regular Production"] = (f"=MAX(0,B{r}+{absref(L.planning_ref(kind, 'target'))}"
                                        f"-{g('Beginning Inventory')}+{g('Beginning Backorders')})")
-            f["Workers"] = f"=ROUNDUP({g('Regular Production')}/{cap},0)"
+            need = f"{g('Regular Production')}/{cap}"
+            f["Workers"] = f"=ROUNDUP({need},0)" if scn.whole_workers else f"={need}"
         elif kind == "level":
             f["Regular Production"] = f"={absref(L.planning_ref(kind, 'level_rate'))}"
             f["Workers"] = f"={absref(L.planning_ref(kind, 'level_workers'))}"

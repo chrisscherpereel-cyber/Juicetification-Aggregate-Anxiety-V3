@@ -324,7 +324,7 @@ def _diag(kind: str, concept: str, i: int, cell: Cell, v, pv, scn: Scenario) -> 
     x = _num(cell)
     if x is None:
         return ""
-    if concept == "Workers" and kind == "chase":
+    if concept == "Workers" and kind == "chase" and scn.whole_workers:
         pr, cap = v.get("Regular Production", [None] * 12)[i], pv.get("capacity")
         if _f(pr, cap) and cap:
             raw = pr / cap
@@ -421,7 +421,7 @@ def _local(kind: str, col: str, i: int, v: Dict[str, List[Optional[float]]],
     if col == "Beginning Inventory":
         return float(p["beginning_inventory"]) if i == 0 else prev("Ending Inventory")
     if col == "Beginning Backorders":
-        return 0.0 if i == 0 else prev("Ending Backorders")
+        return float(p.get("beginning_backorders", 0)) if i == 0 else prev("Ending Backorders")
     if col == "Regular Production":
         if kind == "chase":
             t, bi, bb = pv.get("target"), g("Beginning Inventory"), g("Beginning Backorders")
@@ -430,7 +430,9 @@ def _local(kind: str, col: str, i: int, v: Dict[str, List[Optional[float]]],
     if col == "Workers":
         if kind == "chase":
             cap, pr = pv.get("capacity"), g("Regular Production")
-            return float(math.ceil(pr / cap - 1e-9)) if _f(cap, pr) and cap else None
+            if not (_f(cap, pr) and cap):
+                return None
+            return float(math.ceil(pr / cap - 1e-9)) if scn.whole_workers else pr / cap
         return pv.get("level_workers") if kind == "level" else None
     if col == "Regular Capacity":
         cap, w = pv.get("capacity"), g("Workers")
@@ -506,9 +508,11 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
         cell = book.cell(sheet, ref)
         local = None
         if pc.key == "level_rate" and _f(pv.get("total_demand"), pv.get("target")):
-            local = (pv["total_demand"] + pv["target"] - float(scn["beginning_inventory"])) / 12
+            local = (pv["total_demand"] + pv["target"] - float(scn["beginning_inventory"])
+                     + float(scn.params.get("beginning_backorders", 0))) / 12
         elif pc.key == "level_workers" and _f(pv.get("level_rate"), pv.get("capacity")) and pv["capacity"]:
-            local = float(math.ceil(pv["level_rate"] / pv["capacity"] - 1e-9))
+            need = pv["level_rate"] / pv["capacity"]
+            local = float(math.ceil(need - 1e-9)) if scn.whole_workers else need
         elif pc.key == "ot_limit" and pv.get("capacity") is not None:
             local = pv["capacity"] * float(scn["overtime_pct"])
         st = _judge(cell, key_pv[pc.key], local, _tol(pc.key), require)

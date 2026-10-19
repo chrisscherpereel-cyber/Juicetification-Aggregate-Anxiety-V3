@@ -5,7 +5,7 @@ the checker can compare. The rules are exactly the ones printed on the workbook'
 "Start Here" sheet:
 
     Beginning Inventory   = last month's Ending Inventory   (January = BeginInv)
-    Beginning Backorders  = last month's Ending Backorders  (January = 0)
+    Beginning Backorders  = last month's Ending Backorders  (January = BeginBackorders)
     Ending Inventory      = MAX(0, Beg Inv + Production - Beg Backorders - Demand)
     Ending Backorders     = MAX(0, Demand + Beg Backorders - Beg Inv - Production)
     Hires                 = MAX(0, Workers - last month's Workers)   (January vs StartWorkers)
@@ -14,9 +14,10 @@ the checker can compare. The rules are exactly the ones printed on the workbook'
 
 Chase:  Production = MAX(0, Demand + EndTarget - Beg Inv + Beg Backorders);
         Workers = ROUNDUP(Production / capacity per worker, 0)
-Level:  Production = (Total demand + EndTarget - BeginInv) / 12 every month;
+Level:  Production = (Total demand + EndTarget - BeginInv + BeginBackorders) / 12 every month;
         Workers = ROUNDUP(level production / capacity per worker, 0) every month
 Workers are paid for capacity (Workers x LaborCost) whether or not it is fully used.
+Under worker_policy=partial the ROUNDUPs are dropped (fractional worker-equivalents).
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def simulate(scn: Scenario, dec: Decision) -> pd.DataFrame:
     if not (len(W) == len(R) == len(O) == len(S) == n):
         raise ValueError(f"Every decision list must have {n} entries (one per month).")
     prev_w = float(p["starting_workforce"])
-    inv, bk = float(p["beginning_inventory"]), 0.0
+    inv, bk = float(p["beginning_inventory"]), float(p.get("beginning_backorders", 0))
     rows = []
     for i, m in enumerate(scn.months):
         w, reg, ot, sub = W[i], R[i], O[i], S[i]
@@ -97,13 +98,16 @@ def simulate(scn: Scenario, dec: Decision) -> pd.DataFrame:
 
 
 def workers_for(scn: Scenario, req: float) -> float:
-    return float(math.ceil(max(0.0, req) / scn.cap_month - 1e-9))
+    """Workforce needed to make `req` bottles: whole workers round UP (the extra capacity is
+    idle but paid); under the partial-worker policy the fraction is kept."""
+    need = max(0.0, req) / scn.cap_month
+    return float(math.ceil(need - 1e-9)) if scn.whole_workers else need
 
 
 def reference_chase(scn: Scenario) -> Decision:
     """Chase: each month produce exactly what is needed to end at the target."""
     t = scn.target
-    net = float(scn.params["beginning_inventory"])
+    net = float(scn.params["beginning_inventory"]) - float(scn.params.get("beginning_backorders", 0))
     workers, prod = [], []
     for d in scn.demand:
         req = max(0.0, d + t - net)
@@ -114,9 +118,11 @@ def reference_chase(scn: Scenario) -> Decision:
 
 
 def level_rate(scn: Scenario) -> float:
-    """(total demand + ending-inventory target - beginning inventory) / months, never < 0."""
-    return max(0.0, (scn.total_demand + scn.target - scn.params["beginning_inventory"])
-               / len(scn.months))
+    """(total demand + ending-inventory target - beginning inventory + beginning backorders)
+    / months, never < 0."""
+    p = scn.params
+    return max(0.0, (scn.total_demand + scn.target - p["beginning_inventory"]
+                     + p.get("beginning_backorders", 0)) / len(scn.months))
 
 
 def reference_level(scn: Scenario) -> Decision:
@@ -170,9 +176,10 @@ def check_feasibility(df: pd.DataFrame, scn: Scenario) -> List[dict]:
         (df["Regular Production"] > df["Regular Capacity"] + EPS).tolist(),
         "Regular production ≤ Workers × capacity per worker every month.",
         "Regular production exceeds capacity in")
-    add("Whole-number workforce",
-        [abs(w - round(w)) > 1e-6 for w in df["Workers"]],
-        "Workers are whole numbers every month.", "Fractional workers in")
+    if scn.whole_workers:
+        add("Whole-number workforce",
+            [abs(w - round(w)) > 1e-6 for w in df["Workers"]],
+            "Workers are whole numbers every month.", "Fractional workers in")
     ot = df["Overtime Production"]
     add(f"Overtime within {p['overtime_pct']:.0%} of regular capacity",
         (ot > df["Regular Capacity"] * p["overtime_pct"] + EPS).tolist(),

@@ -26,10 +26,14 @@ def param_rows(scn: Scenario) -> List[Tuple[str, str, str]]:
     """(label, value, unit) for the brief and the PDF."""
     p = scn.params
     rows = [
-        ("Beginning inventory (before January)", n0(p["beginning_inventory"]), "bottles"),
-        ("Safety stock", n0(p["safety_stock"]), "bottles"),
-        ("Inventory target policy",
-         "Maintain safety stock" if scn.maintains_safety else "No safety stock", ""),
+        ("Beginning inventory (on hand before January)", n0(p["beginning_inventory"]), "bottles"),
+        ("Beginning backorders (orders still owed before January)",
+         n0(p.get("beginning_backorders", 0)), "bottles"),
+        ("Safety stock policy",
+         f"Keep {n0(p['safety_stock'])} bottles" if scn.maintains_safety else "No safety stock", ""),
+        ("Ending-inventory target (EndTarget)", n0(scn.target), "bottles"),
+        ("Workforce policy",
+         "Whole workers only" if scn.whole_workers else "Fractional workers allowed", ""),
         ("Storage capacity", n0(p["max_inventory"]), "bottles"),
         ("Output per worker-hour", n0(p["bottles_per_hour"]), "bottles/hour"),
         ("Paid hours per worker per day", n0(p["hours_per_day"]), "hours/day"),
@@ -50,14 +54,79 @@ def param_rows(scn: Scenario) -> List[Tuple[str, str, str]]:
     return rows
 
 
-def target_sentence(scn: Scenario) -> str:
+def policies(scn: Scenario) -> List[Tuple[str, str, List[str]]]:
+    """The company's planning policies: (title, one-line summary, details). These are the
+    business rules every plan must follow — stated as policy, not as formulas."""
+    p = scn.params
+    s, b = n0(p["safety_stock"]), n0(p["beginning_inventory"])
+    bb = n0(p.get("beginning_backorders", 0))
     if scn.maintains_safety:
-        return (f"Your company keeps {n0(scn['safety_stock'])} bottles of safety stock: each "
-                f"chase month aims to END with {n0(scn.target)} bottles, and the level plan "
-                f"must end December with at least {n0(scn.target)}.")
-    return ("Your company carries no safety stock: the chase plan uses up the beginning "
-            "inventory in January and then ends each month with 0 bottles; the level plan "
-            "aims to end December at 0.")
+        inv = ("Safety stock: KEEP " + s + " bottles", [
+            f"Your company keeps a safety stock of {s} bottles as a cushion against surprises, "
+            f"so EndTarget = {s}.",
+            f"Chase plan: every month aims to END with {s} bottles on the shelf — no more, no less.",
+            f"Level plan: one steady rate, chosen so that December ends with {s} bottles.",
+            f"Hybrid plan: December must end with at least {s} bottles.",
+            "Safety stock is a target, not a locked reserve: if demand is higher than planned, "
+            "customers are served first.",
+            "Safety-stock bottles are held like any others, so they cost HoldCost every month "
+            "they sit on the shelf.",
+            f"Beginning inventory (BeginInv = {b}) is simply the stock on the shelf on January 1. "
+            "It is not the safety stock, even if the two numbers happen to be equal.",
+        ])
+    else:
+        inv = ("Safety stock: NONE", [
+            "Your company does NOT keep safety stock, so EndTarget = 0. The SafetyStock figure "
+            "on the Scenario sheet is not used by your plans.",
+            "Chase plan: use up the beginning inventory, then aim to end every month with 0 "
+            "bottles on the shelf.",
+            "Level plan: one steady rate, chosen so that December ends with 0 bottles.",
+            "Hybrid plan: December may end with any stock of 0 or more.",
+            f"Beginning inventory (BeginInv = {b}) is simply the stock on the shelf on January 1 "
+            "— use it up; don't keep it as a reserve.",
+        ])
+    bo = ("Backorders: unfilled orders carry forward", [
+        "An order you can't fill is not lost: it becomes a backorder and is still owed next month.",
+        f"You start the year owing BeginBackorders = {bb} bottles of orders.",
+        "When stock is available, old orders are shipped first, then this month's demand.",
+        "Every bottle still on backorder at the end of a month costs BackorderCost for that month.",
+        "Stock is never negative: a shortfall is recorded as backorders, not as negative inventory.",
+        f"Hybrid plan: no more than {n0(p['terminal_backlog_max'])} bottles may still be on "
+        f"backorder at the end of December"
+        + (f", and at least {p['service_requirement_pct']:g}% of demand must ship in the month "
+           "it is ordered." if p["service_requirement_pct"] > 0 else "."),
+    ])
+    if scn.whole_workers:
+        wk = ("Workforce: whole workers only", [
+            "You employ whole people — there are no fractions of a worker.",
+            "If a month's production needs, say, 10.2 workers' worth of capacity, you must employ "
+            "11. The extra capacity sits idle, but those workers are still paid.",
+            "Workers are paid LaborCost for every month they are employed, busy or not.",
+            f"You start the year with StartWorkers = {n0(p['starting_workforce'])} workers. "
+            "Hiring and layoffs are counted against the previous month's workforce (January "
+            "against StartWorkers): each hire costs HireCost, each layoff LayoffCost.",
+            "One worker's monthly capacity comes from their output per hour, paid hours per day "
+            "and working days per month (Scenario sheet).",
+        ])
+    else:
+        wk = ("Workforce: fractional workers allowed", [
+            "Your company can staff in fractions of a worker (part-time hours, shared staff): "
+            "think of the Workers column as worker-equivalents.",
+            "Employ exactly the workforce production needs — 10.2 workers is fine. Do not round.",
+            "Labor, hiring and layoff costs are paid in proportion: half a worker hired costs "
+            "half of HireCost.",
+            f"You start the year with StartWorkers = {n0(p['starting_workforce'])} workers. "
+            "Hiring and layoffs are counted against the previous month's workforce (January "
+            "against StartWorkers).",
+            "One worker's monthly capacity comes from their output per hour, paid hours per day "
+            "and working days per month (Scenario sheet).",
+        ])
+    return [(t, d[0], d[1:]) for t, d in (inv, bo, wk)]
+
+
+def target_sentence(scn: Scenario) -> str:
+    """One-line summary of all three policies."""
+    return " ".join(f"{t}." for t, _, _ in policies(scn))
 
 
 EXCEL_TIPS = [

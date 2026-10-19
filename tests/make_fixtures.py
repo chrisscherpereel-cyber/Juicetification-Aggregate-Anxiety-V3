@@ -9,6 +9,7 @@ tools/recalc_in_excel.ps1 on each:
   key_seed7.xlsx       complete answer key incl. a hybrid plan
   mistakes_seed7.xlsx  typical slips: a typed number, a missing $, a short justification
   shuffled_seed7.xlsx  chase columns in a student's own order with their own headings
+  policies_seed7.xlsx  safety stock kept, fractional workers, 500 orders owed in January
 """
 
 from __future__ import annotations
@@ -25,12 +26,14 @@ sys.path.insert(0, ROOT)
 from openpyxl import load_workbook  # noqa: E402
 
 from aggplan import layout as L, workbook  # noqa: E402
-from aggplan.engine import Decision  # noqa: E402
+from aggplan.engine import Decision, reference_chase  # noqa: E402
 from aggplan.scenario import resolve_scenario  # noqa: E402
 
 SEED, SID, NAME = 7, "S1", "Test Student"
 HYBRID = Decision([11] * 12, [11000] * 12, [0] * 5 + [1000, 2000] + [0] * 5, [0] * 12)
 FIX = os.path.join(HERE, "fixtures")
+POLICY_CFG = {"safety_stock_policy": "maintain", "worker_policy": "partial",
+              "beginning_backorders": 500}
 
 # A student's own design: different order, different words, one helper column.
 SHUFFLED_CHASE = [
@@ -74,6 +77,13 @@ def main() -> None:
                                        hybrid_decision=HYBRID, columns={"chase": SHUFFLED_CHASE})
     open(raw, "wb").write(shuffled)
     recalc(raw, os.path.join(FIX, "shuffled_seed7.xlsx"))
+
+    # every non-default policy at once: keep safety stock, fractional workers, orders owed
+    pscn = resolve_scenario(POLICY_CFG, SEED)
+    policy = workbook.build_workbook(pscn, student_name=NAME, student_id=SID, solution=True,
+                                     hybrid_decision=reference_chase(pscn))
+    open(raw, "wb").write(policy)
+    recalc(raw, os.path.join(FIX, "policies_seed7.xlsx"))
     os.remove(raw)
 
 

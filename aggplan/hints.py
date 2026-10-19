@@ -77,30 +77,41 @@ def _production(kind: str) -> List[str]:
     ]
 
 
-def _workers(kind: str) -> List[str]:
+def _workers(kind: str, whole: bool) -> List[str]:
     if kind == "chase":
+        if not whole:
+            return [
+                "How many workers' worth of capacity does this month's production take?",
+                "Divide the bottles you must make by what one worker makes in a month. Your "
+                "workforce policy allows fractions, so keep them.",
+                "Divide Production by your capacity-per-worker planning cell, locked with $ so "
+                "every month uses it. Don't round.",
+                "Workers = Production ÷ capacity per worker (fractions allowed).",
+            ]
         return [
             "How many people does it take to make this month's production?",
-            "Divide the bottles you must make by what one worker makes in a month. You can't "
-            "employ part of a person.",
+            "Divide the bottles you must make by what one worker makes in a month. Your "
+            "workforce policy says whole workers only, so a fraction means one more person.",
             "Use ROUNDUP(…, 0) on Production ÷ capacity per worker, and lock the capacity "
             "planning cell with $ so every month uses it.",
             "Workers = ROUNDUP(Production ÷ capacity per worker, 0).",
         ]
     if kind == "level":
+        how = ("ROUNDUP of level rate ÷ capacity per worker" if whole
+               else "level rate ÷ capacity per worker, fractions kept")
         return [
             "Does a level plan change its workforce during the year?",
             "No: one workforce, big enough to make the level rate every month.",
-            "Work it out once in the planning cell (ROUNDUP of level rate ÷ capacity per "
-            "worker) and point every month at it with $.",
-            "Workers every month = ROUNDUP(level rate ÷ capacity per worker, 0).",
+            f"Work it out once in the planning cell ({how}) and point every month at it with $.",
+            "Workers every month = " + ("ROUNDUP(level rate ÷ capacity per worker, 0)."
+                                        if whole else "level rate ÷ capacity per worker."),
         ]
     return [
         "This is one of your decisions. How many workers does your strategy keep?",
         "More workers mean more labor cost every month; fewer may need overtime, "
         "subcontracting or backorders.",
-        "Type whole numbers; the rest of the sheet should react to them.",
-        "Workers must be whole numbers.",
+        "Type your choice; the rest of the sheet should react to it.",
+        "Workers must be whole numbers." if whole else "Fractional workers are allowed.",
     ]
 
 
@@ -115,9 +126,11 @@ _COMMON: Dict[str, List[str]] = {
     ],
     "Beginning Backorders": [
         "Can orders you couldn't fill last month just disappear?",
-        "Unfilled orders carry into the next month. January starts with none.",
-        "Point at last month's Ending Backorders cell (one row up); January is 0.",
-        "Beginning Backorders = previous month's Ending Backorders; January = 0.",
+        "Unfilled orders carry into the next month. January starts with the orders still owed "
+        "before the year begins (see the Scenario sheet).",
+        "Point at last month's Ending Backorders cell (one row up); January uses the name "
+        "BeginBackorders.",
+        "Beginning Backorders = previous month's Ending Backorders; January = BeginBackorders.",
     ],
     "Hires": [
         "When do you have to hire?",
@@ -254,14 +267,16 @@ PLANNING: Dict[str, List[str]] = {
     "level_rate": [
         "If you make the same amount every month, how much must that be?",
         "Over the year you must make the total demand plus the December stock you want, minus "
-        "the stock you already have; spread it evenly over 12 months.",
-        "Use your total-demand and target planning cells and the name BeginInv; divide by 12.",
-        "Level production = (total demand + December target − BeginInv) ÷ 12.",
+        "the stock you already have, plus any orders you already owe; spread it evenly over "
+        "12 months.",
+        "Use your total-demand and target planning cells and the names BeginInv and "
+        "BeginBackorders; divide by 12.",
+        "Level production = (total demand + December target − BeginInv + BeginBackorders) ÷ 12.",
     ],
     "level_workers": [
         "How many workers can make the level rate every month?",
-        "Divide the level rate by one worker's monthly capacity — and you can't hire part of "
-        "a person.",
+        "Divide the level rate by one worker's monthly capacity — and your policy says "
+        "whole workers only.",
         "ROUNDUP(…, 0) of your level-rate cell ÷ your capacity cell.",
         "Level workforce = ROUNDUP(level production ÷ capacity per worker, 0).",
     ],
@@ -333,9 +348,22 @@ SUMMARY: Dict[str, List[str]] = {
 }
 
 
-def ladder(kind: str, item: str) -> List[str]:
+def _level_workers(whole: bool) -> List[str]:
+    if whole:
+        return PLANNING["level_workers"]
+    return [
+        "How many workers' worth of capacity does the level rate take?",
+        "Divide the level rate by one worker's monthly capacity; your policy allows fractions.",
+        "Your level-rate cell ÷ your capacity cell. Don't round.",
+        "Level workforce = level production ÷ capacity per worker (fractions allowed).",
+    ]
+
+
+def ladder(kind: str, item: str, whole: bool = True) -> List[str]:
     """The four hint steps for a plan column, planning cell ('plan:<key>'), the totals
     row ('total'), or a Summary item ('summary:<metric>')."""
+    if item == "plan:level_workers":
+        return _level_workers(whole)
     if item.startswith("plan:"):
         return PLANNING[item[5:]]
     if item == "total" or item.startswith("total:"):
@@ -346,15 +374,15 @@ def ladder(kind: str, item: str) -> List[str]:
     if item == "Regular Production":
         return _production(kind)
     if item == "Workers":
-        return _workers(kind)
+        return _workers(kind, whole)
     if item == "Total Cost":
         return _total_cost(kind)
     return _COMMON.get(item, ["Check this value.", "", "", ""])
 
 
-def hint_text(kind: str, item: str, level: int) -> List[str]:
+def hint_text(kind: str, item: str, level: int, whole: bool = True) -> List[str]:
     """Hint steps 1..level (the student sees everything unlocked so far)."""
-    steps = ladder(kind, item)
+    steps = ladder(kind, item, whole)
     level = max(1, min(MAX_LEVEL, level))
     return [s for s in steps[:level] if s]
 

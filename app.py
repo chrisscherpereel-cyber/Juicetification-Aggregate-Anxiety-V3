@@ -252,6 +252,21 @@ def demand_chart(scn) -> alt.Chart:
         tooltip=["Month", alt.Tooltip("Demand", format=",.0f")]).properties(height=240))
 
 
+def show_policies(scn, expanded: bool = False) -> None:
+    """Safety stock, backorders and workforce rules — one card each."""
+    cols = st.columns(3) if expanded else [st.container()] * 3
+    for col, (title, summary, details) in zip(cols, text.policies(scn)):
+        with col:
+            if expanded:
+                with st.container(border=True):
+                    st.markdown(f"**{text.md(title)}**")
+                    st.markdown(text.md(summary))
+                    st.markdown("\n".join(f"- {text.md(d)}" for d in details))
+            else:
+                st.markdown(f"**{text.md(title)}** — {text.md(summary)}")
+                st.markdown("\n".join(f"- {text.md(d)}" for d in details))
+
+
 def page_start() -> None:
     header("start")
     if not SS["student"]:
@@ -287,10 +302,12 @@ def page_start() -> None:
     m[2].metric("Peak demand", f"{max(scn.demand):,.0f}")
     m[3].metric("Lowest demand", f"{min(scn.demand):,.0f}")
     st.altair_chart(demand_chart(scn), use_container_width=True)
+    st.subheader("Your company's planning policies")
+    st.caption("Every plan must follow these. They are also on the Scenario sheet of your workbook.")
+    show_policies(scn, expanded=True)
     c1, c2 = st.columns([1.2, 1])
     with c1:
         st.subheader("Given data")
-        st.caption(text.md(text.target_sentence(scn)))
         md_table(pd.DataFrame(text.param_rows(scn), columns=["Item", "Value", "Unit"]))
     with c2:
         st.subheader("Your workbook")
@@ -343,7 +360,7 @@ def item_name(kind: str, item: str, res: checker.PieceResult) -> str:
 
 
 def hint_block(kind: str, item: str, level: int) -> str:
-    steps = hints.hint_text(kind, item, level)
+    steps = hints.hint_text(kind, item, level, scenario().whole_workers)
     parts = []
     for i, s in enumerate(steps, start=1):
         parts.append(f"<div class='lvl'>Hint {i} · {hints.LEVEL_NAMES[i]}</div>"
@@ -460,8 +477,12 @@ def show_guidance(key: str, scn) -> None:
             st.write(f"Under the grid on the **{L.PLAN_SHEETS[key]}** sheet:")
             md_table(pd.DataFrame([{"Cell": L.planning_ref(key, pc.key),
                                     "Work out": f"{pc.label} ({pc.unit})",
-                                    "Think about": hints.PLANNING[pc.key][0]}
+                                    "Think about": hints.ladder(key, f"plan:{pc.key}",
+                                                                scn.whole_workers)[0]}
                                    for pc in L.PLANNING[key]]))
+    if key != "summary":
+        with st.expander("Your company's policies: safety stock, backorders, workers"):
+            show_policies(scn)
     if ps["help"] or ps["colhelp"]:
         with st.expander(f"Your hints so far ({len(ps['help']) + len(ps['colhelp'])})"):
             res = SS["results"].get(key) or checker.PieceResult(key, "")

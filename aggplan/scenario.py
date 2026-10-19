@@ -47,9 +47,11 @@ _SHAPE = [0.55, 0.60, 0.75, 1.00, 1.30, 1.55, 1.65, 1.40, 1.10, 0.85, 0.70, 0.55
 NAME_KEYS: List[Tuple[str, str, str, str]] = [
     # (Excel name, parameter key, meaning, unit)
     ("BeginInv", "beginning_inventory", "Inventory on hand before January", "bottles"),
-    ("SafetyStock", "safety_stock", "Safety-stock quantity", "bottles"),
-    ("EndTarget", "_target", "Inventory each chase month aims to end with "
-                             "(and the level plan's December target)", "bottles"),
+    ("BeginBackorders", "beginning_backorders", "Customer orders still unfilled before January",
+     "bottles"),
+    ("SafetyStock", "safety_stock", "Safety-stock quantity (see Planning policies below)",
+     "bottles"),
+    ("EndTarget", "_target", "Ending-inventory target your policy sets (see below)", "bottles"),
     ("MaxInventory", "max_inventory", "Storage capacity (most bottles you can hold)", "bottles"),
     ("StartWorkers", "starting_workforce", "Workers employed before January", "workers"),
     ("BottlesPerHour", "bottles_per_hour", "Output of one worker per hour", "bottles/hour"),
@@ -117,6 +119,10 @@ class Scenario:
     @property
     def maintains_safety(self) -> bool:
         return self.params.get("safety_stock_policy") == "maintain"
+
+    @property
+    def whole_workers(self) -> bool:
+        return self.params.get("worker_policy", "whole") != "partial"
 
     @property
     def target(self) -> float:
