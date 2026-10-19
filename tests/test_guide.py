@@ -113,3 +113,66 @@ def test_unchanged_starting_plan_is_not_yet_good_when_it_can_be_improved():
     assert v.feasible and not v.good and any("starting plan" in n for n in v.notes)
     p = scn7(worker_policy="partial")
     assert guide.evaluate(p, "chase", engine.reference_plan(p, "chase")).good
+
+
+@pytest.mark.parametrize("seed", [7, 1, 207659])
+def test_coach_finishes_the_job_from_the_screenshot_mistake(seed):
+    """Workers lowered but Regular Production left as it was (the plan breaks capacity).
+    Doing what the coach says — month by month — must end in a good solution."""
+    s = resolve_scenario({}, seed)
+    cap = s.cap_month
+    base = guide.starting_decision(s, "chase")
+    qual = {r["i"]: r for r in guide._round_down_months(s)}
+    W, R = list(base.workers), list(base.regular)
+    for i in qual:
+        W[i] -= 1                                        # the mistake
+    plan = engine.simulate(s, engine.Decision(W, R, [0.0] * 12, [0.0] * 12))
+    fixes, opps = guide.coach(s, "chase", plan, 1)
+    assert len(fixes) == len(qual) and not opps
+    assert all("Regular Production to" in f and "Overtime to" in f for f in fixes)
+    O = [0.0] * 12
+    for i in qual:                                       # do what each fix says
+        O[i] = R[i] - W[i] * cap
+        R[i] = W[i] * cap
+    plan = engine.simulate(s, engine.Decision(W, R, O, [0.0] * 12))
+    assert guide.coach(s, "chase", plan, 1) == ([], [])
+    assert guide.evaluate(s, "chase", plan).good
+
+
+def test_coach_opportunities_get_more_specific_and_lead_to_the_answer():
+    s = resolve_scenario({}, 207659)
+    cap = s.cap_month
+    base = guide.starting_decision(s, "chase")
+    qual = guide._round_down_months(s)
+    W, R, O = list(base.workers), list(base.regular), [0.0] * 12
+    for q in qual[:1]:                                    # only one month done
+        W[q["i"]] -= 1
+        R[q["i"]] = W[q["i"]] * cap
+        O[q["i"]] = q["rem"]
+    plan = engine.simulate(s, engine.Decision(W, R, O, [0.0] * 12))
+    v = guide.evaluate(s, "chase", plan)
+    assert v.feasible and not v.good
+    one, two, three = (guide.coach(s, "chase", plan, k)[1] for k in (1, 2, 3))
+    assert "still qualif" in one[0] and "Still to change" in two[0]
+    assert len(three) == len(qual) - 1 and "Workers" in three[0]
+    for q in qual[1:]:                                     # do what step 3 says
+        W[q["i"]] -= 1
+        R[q["i"]] = W[q["i"]] * cap
+        O[q["i"]] = q["rem"]
+    assert guide.evaluate(s, "chase", engine.simulate(s, engine.Decision(W, R, O, [0.0] * 12))).good
+
+
+def test_level_coach_flags_overbuying():
+    s = resolve_scenario({"scenario_preset": "stability_favored"}, 1)
+    good = __import__("tests.test_guide", fromlist=["follow"]).follow(s, "level")
+    S = [x + (500 if i == 6 else 0) for i, x in enumerate(good.subcontract)]   # 500 too many
+    plan = engine.simulate(s, engine.Decision(good.workers, good.regular, good.overtime, S))
+    fixes, opps = guide.coach(s, "level", plan, 2)
+    assert not fixes and any("July" in o for o in opps)
+
+
+def test_task_checklist_has_a_worked_example():
+    s = scn7()
+    task = guide.steps(s, "chase")[-1]
+    assert "Worked example" in task.text and "three cells" in task.text
+    assert "Regular Production" in task.text and "easy to forget" in task.text

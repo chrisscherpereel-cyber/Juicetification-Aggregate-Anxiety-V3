@@ -111,8 +111,17 @@ Both modes recommend the student's cheaper plan, with their own cost breakdown a
      extra source is cheapest per bottle, the overtime limit;
    * **no-gain track** (fractional workers) — the cost of a regular-time vs an overtime bottle,
      and why the chase plan is already the best mix.
-4. *Make the change in Excel* — one instruction that applies the rule to every month.
-5. *How good is it?* — each upload compares the hybrid with both plans. A **good solution** is
+4. *Make the change in Excel* — a numbered checklist with a worked example from the
+   student's own numbers (e.g. February: Workers 9 → 8, Regular Production 8,500 → 8,000,
+   Overtime 0 → 500), stressing the step that is easy to forget: a smaller crew makes less on
+   regular time.
+5. *Month-by-month coach* — after every upload, each month that breaks a limit is named with the
+   exact cells to change, in the student's own numbers ("February: 8 workers can make only
+   8,000 on regular time, but Regular Production is 8,500 — set it to 8,000 and Overtime to
+   500"). Once the plan meets every limit, help on where money is still left grows with each
+   upload: a nudge, then which months, then the change for each month. Tests replay a
+   half-finished plan through the coach to a good solution.
+6. *How good is it?* — each upload compares the hybrid with both plans. A **good solution** is
    feasible, at least as cheap as both plans, and (where an improvement exists) cheaper than the
    starting plan; then a short "why is it better?" question. Tests confirm that doing what the
    walkthrough says reaches a good solution in every scenario family.

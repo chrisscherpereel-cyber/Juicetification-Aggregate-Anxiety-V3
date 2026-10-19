@@ -710,7 +710,8 @@ def guided_hybrid(scn, ps: dict) -> bool:
     for step in guide.steps(scn, start):
         if isinstance(step, guide.Task):
             st.markdown(f"#### 4 · {step.title}")
-            st.markdown(f"<div class='aa-card'>{escape(step.text)}</div>", unsafe_allow_html=True)
+            with st.container(border=True):
+                st.markdown(text.md(step.text))
             g["track"] = track
             return True
         if not _ask(step, g):
@@ -728,8 +729,23 @@ def guided_verdict(scn, ps: dict, res) -> None:
                             "Feasible": "✔ yes" if v.feasible else "✖ no"},
                            {"Plan": "Chase", "Total cost": f"${v.chase:,.0f}", "Feasible": ""},
                            {"Plan": "Level", "Total cost": f"${v.level:,.0f}", "Feasible": ""}]))
+    # how much opportunity help: grows with each upload that is feasible but not good yet
+    if v.feasible and not v.good and g.get("coach_sha") != res.sha256:
+        g["coach_sha"] = res.sha256
+        g["coach_level"] = min(3, g.get("coach_level", 0) + 1)
+        save_state("guide")
+    fixes, opps = guide.coach(scn, g["start"], res.plan, max(1, g.get("coach_level", 1)))
+    if fixes:
+        st.markdown("**Fix these months** — your plan breaks a limit here:")
+        st.markdown("\n".join(f"- {text.md(f)}" for f in fixes))
     for n in v.notes:
-        st.markdown(text.md(n))
+        if not n.startswith("✖"):
+            st.markdown(text.md(n))
+    if opps:
+        lvl = g.get("coach_level", 1)
+        st.markdown(f"**Where money is still left** (help step {lvl} of 3 — more detail on "
+                    "each upload):")
+        st.markdown("\n".join(f"- {text.md(o)}" for o in opps))
     if v.good:
         saved = v.start_cost - v.cost
         st.success("🎯 A good solution: feasible and "
@@ -738,9 +754,9 @@ def guided_verdict(scn, ps: dict, res) -> None:
                       "as cheap as the best pure strategy (nothing cheaper is possible here)."))
         if _ask(guide.reflection(g["start"], guide.track_name(scn, g["start"])), g):
             st.caption("Submit your hybrid plan below.")
-    elif v.feasible:
-        st.info("Feasible — now make it cheaper than both plans. Re-read the rule above and "
-                "check each month; upload after each change.")
+    elif v.feasible and not opps:
+        st.info("Feasible — now make it cheaper than both plans. Re-read the checklist above "
+                "and check each month; upload after each change.")
 
 
 def show_guidance(key: str, scn) -> None:
