@@ -14,10 +14,10 @@ peak. Each student ID produces its own reproducible demand forecast, so answers 
 
 | Step | What the student does |
 |------|-----------------------|
-| **1 · Scenario & workbook** | Signs in, studies the demand forecast, **chooses the two planning policies** (below), and downloads a personal `.xlsx` built for them. |
+| **1 · Scenario & workbook** | Signs in, studies the demand forecast and the planning policies, and downloads a personal `.xlsx` built for the policies set in the sidebar. |
 | **2 · Chase plan** | Designs the chase worksheet, uploads, fixes, re-uploads; submits when it is all correct. |
 | **3 · Level plan** | Opens once the chase plan is submitted. Same loop. |
-| **4 · Hybrid plan** | Opens after the level plan. The student chooses workers, regular production, overtime and subcontracting; the plan must be correct **and** respect every limit. |
+| **4 · Hybrid plan** | Opens after the level plan. **Guided** (default): a starting plan and questions that lead to a good solution. **Build it yourself**: the student designs the sheet. Either way the plan must be correct **and** respect every limit. |
 | **5 · Compare & recommend** | The Summary sheet: each plan's yearly figures, the cheaper plan (`IF`), the savings (`ABS`), a recommendation and a written justification. |
 | **6 · Final report** | A PDF listing every piece. A DRAFT is available at any time. |
 
@@ -84,55 +84,42 @@ out like the student's own sheet: every column they built (helper columns shown 
 the totals row and the planning cells. Wide sheets such as the hybrid switch to vertical headings
 so all columns fit; hybrid columns wait (…) until the decisions are filled in.
 
-## Where to start the hybrid
+## The hybrid plan
 
-The hybrid step opens with a guide built from the student's own submitted plans: a side-by-side
-cost breakdown of their chase and level plans, and why the hybrid should start from the **level
-plan** — it is already the steady base workforce a hybrid keeps, and its problems sit in specific
-peak months (backorders, missed on-time target) that overtime and subcontracting are designed to
-fix, whereas the chase plan's main cost comes from changing the workforce every month. It names
-the first target (e.g. "your level plan ships 79.9% on time; the hybrid needs 95%"), gives five
-steps (copy the level columns and paste the workforce and production as *values*, add the hybrid
-columns, upload, fix the breaking months, try moving the base workforce), and compares what one
-extra bottle in a busy month costs: overtime, subcontracting, building ahead and holding, letting
-the customer wait, or hiring for a month.
+**Where to start — the cheaper of the two plans.** A hybrid improves a plan by fixing its most
+expensive habit. Simulating every default scenario shows why the starting point matters: with
+cheap hiring and layoffs ($600/$900) against $3,200 a month of labor, a steady-workforce hybrid
+built from the level plan is *more* expensive than both pure plans, while the chase plan with
+the rounded-up extra worker replaced by overtime beats both. When hiring and layoffs are
+expensive (`stability_favored`), the level plan can be the cheaper one and is the right start.
+Both modes recommend the student's cheaper plan, with their own cost breakdown as evidence.
 
-## Planning policies (two switches)
+**Guided walkthrough** ([aggplan/guide.py](aggplan/guide.py)):
 
-On step 1 the student sets two switches before downloading the workbook:
+1. *Pick the starting point* — the student chooses, from their own two plans (answer: the
+   cheaper one).
+2. *Get the starting plan* — the student uploads their workbook; the app fills the Hybrid Plan
+   sheet with that plan (every column, formula and total built; Workers and Regular Production
+   as green decisions; no overtime or subcontracting) and hands it back. Other sheets are
+   untouched. The student opens it in Excel, saves, and uploads.
+3. *Questions*, with numbers from the student's scenario, checked as they answer (a nudge after
+   a wrong try; the answer can be revealed after three):
+   * **chase track** — "In February you make 8,500 bottles with 9 workers… how much paid
+     capacity sits idle?", "what would the missing bottles cost on overtime with 8 workers?",
+     "which is cheaper?", "so when is overtime cheaper than one more worker?";
+   * **level track** — which months end with backorders, how much paid capacity is idle, which
+     extra source is cheapest per bottle, the overtime limit;
+   * **no-gain track** (fractional workers) — the cost of a regular-time vs an overtime bottle,
+     and why the chase plan is already the best mix.
+4. *Make the change in Excel* — one instruction that applies the rule to every month.
+5. *How good is it?* — each upload compares the hybrid with both plans. A **good solution** is
+   feasible, at least as cheap as both plans, and (where an improvement exists) cheaper than the
+   starting plan; then a short "why is it better?" question. Tests confirm that doing what the
+   walkthrough says reaches a good solution in every scenario family.
 
-| Switch | Options |
-|---|---|
-| **Safety stock** | *No safety stock* (EndTarget = 0) · *Keep a safety stock* (EndTarget = the safety-stock quantity) |
-| **Workforce** | *Whole workers only* (round up; idle capacity is paid) · *Fractional workers* (capacity grows in small increments — part-time hours — with no rounding) |
-
-The workbook, answer key, checker and hints are all built for the chosen policies. The switches
-lock once the first piece is submitted, because every piece must follow the same rules; changing
-them before that asks the student to download the workbook again, and an upload made for the
-other policies is refused with a message saying which switch differs. Instructors who want fixed
-policies set `student_sets_policies=false` and choose `safety_stock_policy` / `worker_policy`.
-When the policy is *no safety stock*, the safety-stock figure is not shown anywhere — not on the
-Scenario sheet, not as an Excel name, not in the app.
-
-### What students are told
-
-The Scenario sheet, the Start Here sheet and step 1 of the app spell out three company
-policies — as business rules, not formulas:
-
-* **Safety stock** — either *none* (EndTarget = 0: the chase plan uses up the beginning stock
-  and ends each month at 0; the level plan ends December at 0) or *keep S bottles*
-  (EndTarget = S: every chase month aims to end with S; the level plan ends December with S;
-  the hybrid must end December with at least S). It also states that beginning inventory is
-  not the safety stock, that safety stock is a target customers can still draw on, and that it
-  costs holding like any other bottle.
-* **Backorders** — unfilled orders carry forward and are filled oldest-first; the year starts
-  owing `BeginBackorders` (given data, with its own Excel name; 0 by default); every bottle
-  still owed at month end costs BackorderCost; stock is never negative.
-* **Workforce** — either *whole workers only* (a need of 10.2 workers means employing 11; the
-  idle capacity is still paid) or *fractional workers allowed* (worker-equivalents, no
-  rounding; costs in proportion), plus how hires and layoffs are counted from StartWorkers.
-
-The checker, answer key and hints all follow the same policies.
+**Build it yourself:** the student designs the Hybrid Plan sheet from scratch, with a "where to
+start" panel (their cost breakdown, the recommended starting plan and why, steps, and what one
+more bottle costs each way). The checker, feasibility tests and cell-by-cell grid are the same.
 
 ## Model rules
 
@@ -180,7 +167,8 @@ form or by URL: `?cfg=<base64 json>`, `?game=<code>`, `?seed=<int>`, `?manifest=
 | `safety_stock_policy` | `none` | `maintain` makes `EndTarget` = safety stock |
 | `beginning_backorders` | 0 | orders still owed before January (`BeginBackorders`) |
 | `worker_policy` | `whole` | `partial` allows fractional workers (no rounding) |
-| `student_sets_policies` | true | students choose the two policies above on step 1 |
+| `student_sets_policies` | true | students set the two policies in the sidebar |
+| `hybrid_mode` | `guided` | default hybrid mode (`guided` or `build`); students can switch |
 | `scenario_preset` | `standard` | `strong_seasonal`, `stability_favored`, `limited_flex`, `tight_storage` |
 | `include_hybrid` | true | include the Hybrid Plan piece |
 | `require_formulas` | true | a typed number in a calculated cell is not accepted |
@@ -221,7 +209,7 @@ After changing the workbook layout or the model, regenerate them on Windows with
 ## Architecture
 
 ```
-app.py                 the six steps (Streamlit): pieces, uploads, hint levels, receipts
+app.py                 the six steps (Streamlit): settings, pieces, uploads, hints, receipts
 aggplan/               no Streamlit import; unit-testable
   scenario.py          Scenario: parameters, demand, Excel names
   engine.py            answer key: simulate(), chase/level reference plans, feasibility
@@ -229,6 +217,7 @@ aggplan/               no Streamlit import; unit-testable
   recognize.py         reads the student's headings -> columns
   checker.py           grades one piece of an uploaded workbook
   hints.py             the four-step hint ladders and the column questions
+  guide.py             the guided hybrid: starting point, questions, verdict
   text.py              scenario text and Excel help
   workbook.py          builds the student workbook (and the answer key)
   report.py            piece receipts and the final report (PDF)

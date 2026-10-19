@@ -56,15 +56,19 @@ def test_helper_columns_are_shown_but_not_graded():
 st_testing = pytest.importorskip("streamlit.testing.v1")
 
 
-def test_student_sets_the_two_policies_until_a_piece_is_submitted():
+def test_switches_live_in_the_sidebar_with_defaults():
     at = st_testing.AppTest.from_file(APP, default_timeout=30).run()
     at.text_input[0].input("Ann")
     at.text_input[1].input("S1")
     next(b for b in at.button if b.label == "Start").click()
     at = at.run()
-    assert [r.label for r in at.radio] == ["**Safety stock**", "**Workforce**"]
-    at.radio[0].set_value("maintain")
-    at.radio[1].set_value("partial")
+    radios = {r.label: r for r in at.sidebar.radio}
+    assert list(radios) == ["Safety stock", "Workforce", "Hybrid plan"]
+    assert (radios["Safety stock"].value, radios["Workforce"].value,
+            radios["Hybrid plan"].value) == ("none", "whole", "guided")
+    assert not at.main.radio                                # nothing on step 1 any more
+    radios["Safety stock"].set_value("maintain")
+    radios["Workforce"].set_value("partial")
     at = at.run()
     assert at.session_state["policy"] == {"safety_stock_policy": "maintain",
                                           "worker_policy": "partial"}
@@ -72,4 +76,6 @@ def test_student_sets_the_two_policies_until_a_piece_is_submitted():
     at.session_state["pieces"]["chase"]["submitted"] = {"at": "now", "sha": "x", "file": "f",
                                                         "metrics": {}, "feasibility": []}
     at = at.run()
-    assert all(r.disabled for r in at.radio)
+    radios = {r.label: r for r in at.sidebar.radio}
+    assert radios["Safety stock"].disabled and radios["Workforce"].disabled
+    assert not radios["Hybrid plan"].disabled

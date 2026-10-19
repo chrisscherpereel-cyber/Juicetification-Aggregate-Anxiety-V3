@@ -45,7 +45,7 @@ def param_rows(scn: Scenario) -> List[Tuple[str, str, str]]:
         ("Holding", usd(p["holding_cost"]), "$/bottle/month"),
         ("Backorder", usd(p["backorder_cost"]), "$/bottle/month"),
         ("Overtime limit", f"{p['overtime_pct']:.0%}", "of regular capacity"),
-        ("Overtime cost (extra)", usd(p["overtime_cost"]), "$/bottle"),
+        ("Overtime cost", usd(p["overtime_cost"]), "$/bottle made on overtime"),
         ("Subcontract cost", usd(p["subcontract_cost"]), "$/bottle"),
         ("Subcontract capacity", n0(p["subcontract_capacity"]), "bottles/month"),
     ]

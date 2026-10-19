@@ -36,7 +36,7 @@ PRESET_LABELS: Dict[str, str] = {
 # Parameters that change presentation only, never a correct answer. They are excluded from
 # the config hash, so an instructor can retune them mid-course without invalidating workbooks.
 NON_MODEL_PARAMS = frozenset({
-    "include_hybrid", "student_sets_policies", "require_formulas", "min_justification_words", "assignment_name",
+    "include_hybrid", "student_sets_policies", "hybrid_mode", "require_formulas", "min_justification_words", "assignment_name",
     "report_timezone",
 })
 
@@ -65,7 +65,7 @@ NAME_KEYS: List[Tuple[str, str, str, str]] = [
     ("BackorderCost", "backorder_cost", "Cost of one bottle backordered for one month",
      "$/bottle/month"),
     ("OTLimitPct", "overtime_pct", "Overtime limit as a share of regular capacity", "fraction"),
-    ("OTCost", "overtime_cost", "Overtime cost per bottle (extra, on top of labor)", "$/bottle"),
+    ("OTCost", "overtime_cost", "Cost of each bottle made on overtime (all-in)", "$/bottle"),
     ("SubCost", "subcontract_cost", "Subcontracting cost per bottle", "$/bottle"),
     ("SubCapacity", "subcontract_capacity", "Most bottles you can subcontract per month",
      "bottles/month"),

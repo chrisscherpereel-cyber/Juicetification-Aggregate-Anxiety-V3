@@ -197,6 +197,7 @@ class PieceResult:
     words: int = 0
     min_words: int = 0
     must_be_feasible: bool = False
+    plan: Optional[pd.DataFrame] = None      # the plan as the answer key computes it
 
     @property
     def readable(self) -> bool:
@@ -568,6 +569,7 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
         res.cells.append(CellCheck(sheet, ref, "total", f"{cm.headings[letter]}, year total",
                                    "Total", f"{letter} · {cm.headings[letter]}", st, _shown(cell)))
     res.metrics[kind] = engine.summarize(pr.key)
+    res.plan = pr.key
     if kind == "hybrid":
         res.feasibility = engine.check_feasibility(pr.key, scn)
         res.must_be_feasible = True

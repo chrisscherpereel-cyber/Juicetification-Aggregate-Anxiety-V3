@@ -29,10 +29,10 @@ import student_store as store
 from juice_director import resolve_config, serve_manifest_if_requested
 from manifest import MANIFEST
 
-from aggplan import checker, hints, layout as L, report, text, workbook
+from aggplan import checker, engine, guide, hints, layout as L, report, text, workbook
 from aggplan import identity as ident
 from aggplan.recognize import HELPER
-from aggplan.scenario import resolve_scenario
+from aggplan.scenario import MONTHS as L_MONTHS, resolve_scenario
 
 st.set_page_config(page_title="Aggregate Anxiety — Excel", page_icon="🧃", layout="wide")
 SS = st.session_state
@@ -116,7 +116,9 @@ def seed_for(sid: str) -> int:
 
 POLICY_KEYS = ("safety_stock_policy", "worker_policy")
 STUDENT_SETS_POLICIES = bool(CFG.get("student_sets_policies", True))
-SS.setdefault("policy", {k: CFG.get(k) for k in POLICY_KEYS})
+SS.setdefault("policy", {"safety_stock_policy": CFG.get("safety_stock_policy") or "none",
+                         "worker_policy": CFG.get("worker_policy") or "whole"})
+SS.setdefault("hybrid_mode", CFG.get("hybrid_mode") or "guided")
 
 
 def policy_cfg() -> dict:
@@ -164,7 +166,7 @@ def save_state(step: str) -> None:
     try:
         store.save(GAME, stu["sid"], {"name": stu["name"], "seed": scn.seed,
                                       "config_hash": scn.config_hash, "pieces": SS["pieces"],
-                                      "policy": SS["policy"]},
+                                      "policy": SS["policy"], "hybrid_mode": SS["hybrid_mode"]},
                    progress=done / len(PIECES), step=step)
     except Exception:                                                  # noqa: BLE001
         pass
@@ -180,6 +182,8 @@ def restore_state() -> None:
         return
     if STUDENT_SETS_POLICIES and isinstance(saved.get("policy"), dict):
         SS["policy"].update({k: v for k, v in saved["policy"].items() if k in POLICY_KEYS})
+    if saved.get("hybrid_mode") in ("guided", "build"):
+        SS["hybrid_mode"] = saved["hybrid_mode"]
     scn = resolve_scenario(policy_cfg(), seed_for(URL_SID))
     if saved.get("config_hash") == scn.config_hash and isinstance(saved.get("pieces"), dict):
         SS["student"] = {"name": saved.get("name") or URL_SID, "sid": URL_SID}
@@ -193,6 +197,50 @@ restore_state()
 # --------------------------------------------------------------------------- #
 # Sidebar
 # --------------------------------------------------------------------------- #
+def _set_policy(key: str, widget: str) -> None:
+    SS["policy"][key] = SS[widget]
+    save_state("settings")
+
+
+def _set_hybrid_mode() -> None:
+    SS["hybrid_mode"] = SS["set_hybrid"]
+    save_state("settings")
+
+
+def sidebar_settings() -> None:
+    """Three switches: safety stock, workforce, and how the hybrid plan is done."""
+    st.markdown("**Settings**")
+    locked = policies_locked()
+    ss_val = f"{float(CFG.get('safety_stock') or 0):,.0f}"
+    pol = SS["policy"] if STUDENT_SETS_POLICIES else {k: CFG.get(k) for k in POLICY_KEYS}
+    ss_opts = {"none": "None (end-of-month target 0)", "maintain": f"Keep {ss_val} bottles"}
+    st.radio("Safety stock", list(ss_opts), format_func=ss_opts.get,
+             index=list(ss_opts).index(pol.get("safety_stock_policy") or "none"),
+             key="set_ss", disabled=locked, on_change=_set_policy,
+             args=("safety_stock_policy", "set_ss"),
+             help="None: plans aim to end with 0 bottles on the shelf. Keep: every chase month "
+                  "(and the level plan's December) aims to end with the safety stock.")
+    wk_opts = {"whole": "Whole workers (round up)", "partial": "Fractional workers"}
+    st.radio("Workforce", list(wk_opts), format_func=wk_opts.get,
+             index=list(wk_opts).index(pol.get("worker_policy") or "whole"),
+             key="set_wk", disabled=locked, on_change=_set_policy,
+             args=("worker_policy", "set_wk"),
+             help="Whole: a need of 10.2 workers means employing 11 (the idle capacity is paid). "
+                  "Fractional: capacity grows in small increments, such as part-time hours.")
+    if locked:
+        st.caption("Policies are locked: " + ("set by your instructor." if not STUDENT_SETS_POLICIES
+                                              else "you've submitted a piece."))
+    else:
+        st.caption("Set the policies before you download your workbook — it is built for them.")
+    if INCLUDE_HYBRID:
+        hm = {"guided": "Guided walkthrough", "build": "Build it yourself"}
+        st.radio("Hybrid plan", list(hm), format_func=hm.get,
+                 index=list(hm).index(SS["hybrid_mode"]), key="set_hybrid",
+                 disabled=submitted("hybrid"), on_change=_set_hybrid_mode,
+                 help="Guided: you get a starting plan and questions that lead to a good "
+                      "solution. Build: you design the hybrid sheet yourself.")
+
+
 with st.sidebar:
     st.markdown("## 🧃 Aggregate Anxiety")
     st.caption("Aggregate planning, built by you in Excel")
@@ -216,6 +264,8 @@ with st.sidebar:
         st.markdown("---")
         st.caption(f"{done} of {len(PIECES)} pieces submitted")
         st.progress(done / len(PIECES))
+    st.markdown("---")
+    sidebar_settings()
     st.markdown("---")
     with st.expander("How this works"):
         st.write("Build the workbook one piece at a time. For each piece: design the columns, "
@@ -291,42 +341,6 @@ def show_policies(scn, expanded: bool = False) -> None:
                 st.markdown("\n".join(f"- {text.md(d)}" for d in details))
 
 
-def policy_switches(scn) -> None:
-    """The two policy switches: how safety stock is handled, and whether fractional
-    workers are allowed. Set by the student unless the instructor fixed them."""
-    st.subheader("Choose your planning policies")
-    if not STUDENT_SETS_POLICIES:
-        st.caption("Your instructor has set these policies for the assignment.")
-    elif policies_locked():
-        st.caption("Locked: you've submitted a piece, and every piece must follow the same "
-                   "policies.")
-    else:
-        st.caption("Pick these BEFORE you download your workbook — it is built for them. They "
-                   "lock when you submit your first piece.")
-    disabled = policies_locked()
-    s = f"{scn['safety_stock']:,.0f}"
-    c1, c2 = st.columns(2)
-    with c1:
-        opts = {"none": "No safety stock — end each chase month (and the level plan's December) "
-                        "with 0 bottles",
-                "maintain": f"Keep a safety stock of {s} bottles — the end-of-month target "
-                            "becomes the safety stock"}
-        cur = scn.params.get("safety_stock_policy", "none")
-        pick = st.radio("**Safety stock**", list(opts), format_func=opts.get,
-                        index=list(opts).index(cur), disabled=disabled, key="pol_ss")
-    with c2:
-        opts2 = {"whole": "Whole workers only — round up; extra capacity sits idle but is paid",
-                 "partial": "Allow fractional workers — capacity grows in small increments "
-                            "(part-time hours), no rounding"}
-        cur2 = scn.params.get("worker_policy", "whole")
-        pick2 = st.radio("**Workforce**", list(opts2), format_func=opts2.get,
-                         index=list(opts2).index(cur2), disabled=disabled, key="pol_wk")
-    if not disabled and (pick, pick2) != (cur, cur2):
-        SS["policy"] = {"safety_stock_policy": pick, "worker_policy": pick2}
-        save_state("start")
-        st.rerun()
-
-
 def page_start() -> None:
     header("start")
     if not SS["student"]:
@@ -362,10 +376,10 @@ def page_start() -> None:
     m[2].metric("Peak demand", f"{max(scn.demand):,.0f}")
     m[3].metric("Lowest demand", f"{min(scn.demand):,.0f}")
     st.altair_chart(demand_chart(scn), use_container_width=True)
-    policy_switches(scn)
-    scn = scenario()                         # the switches may have changed it
     st.subheader("Your company's planning policies")
-    st.caption("Every plan must follow these. They are also on the Scenario sheet of your workbook.")
+    st.caption("Every plan must follow these; they are also on the Scenario sheet of your "
+               "workbook. " + ("Change them under **Settings** in the sidebar before you "
+                               "download your workbook." if not policies_locked() else ""))
     show_policies(scn, expanded=True)
     c1, c2 = st.columns([1.2, 1])
     with c1:
@@ -528,78 +542,205 @@ def submit_piece(key: str, res: checker.PieceResult) -> None:
     save_state(f"submitted:{key}")
 
 
+def _plan_table(scn) -> None:
+    """The student's two submitted plans side by side."""
+    mets = {k: (SS["pieces"][k]["submitted"] or {}).get("metrics", {}).get(k)
+            for k in ("chase", "level")}
+    if not all(mets.values()):
+        mets = {k: engine.summarize(engine.reference_plan(scn, k)) for k in ("chase", "level")}
+    rows = []
+    for m, lab in (("Labor Cost", "Labor"), ("Hiring Cost", "Hiring"),
+                   ("Layoff Cost", "Layoffs"), ("Holding Cost", "Holding"),
+                   ("Backorder Cost", "Backorders"), ("Total Cost", "TOTAL")):
+        rows.append({"Your plans": lab, "Chase": f"${mets['chase'][m]:,.0f}",
+                     "Level": f"${mets['level'][m]:,.0f}"})
+    rows.append({"Your plans": "On-time fulfillment",
+                 "Chase": f"{mets['chase']['On-Time Fulfillment %']:.1f}%",
+                 "Level": f"{mets['level']['On-Time Fulfillment %']:.1f}%"})
+    md_table(pd.DataFrame(rows))
+
+
+def _bottle_costs(scn) -> None:
+    p, cap = scn.params, scn.cap_month
+    hire_cycle = (p["hiring_cost"] + p["layoff_cost"] + p["regular_labor_cost"]) / cap
+    st.markdown("**What one more bottle in a busy month costs** (from your given data):")
+    md_table(pd.DataFrame([
+        {"Option": "Regular time (workers already employed and idle)",
+         "Cost per bottle": "$0 more — already paid", "Limits": "only the idle capacity"},
+        {"Option": "Regular time (a worker paid for the whole month)",
+         "Cost per bottle": f"${p['regular_labor_cost'] / cap:,.2f}",
+         "Limits": f"comes in steps of {cap:,.0f} bottles" + (" (whole workers)"
+                                                              if scn.whole_workers else "")},
+        {"Option": "Overtime", "Cost per bottle": f"${p['overtime_cost']:,.2f}",
+         "Limits": f"only when regular capacity is full; up to {p['overtime_pct']:.0%} of it"},
+        {"Option": "Subcontract", "Cost per bottle": f"${p['subcontract_cost']:,.2f}",
+         "Limits": f"up to {p['subcontract_capacity']:,.0f} bottles a month"},
+        {"Option": "Make it earlier and hold it",
+         "Cost per bottle": f"${p['holding_cost']:,.2f} per month held",
+         "Limits": "needs spare capacity in an earlier month"},
+        {"Option": "Hire a worker for one month", "Cost per bottle": f"about ${hire_cycle:,.2f}",
+         "Limits": f"hire + layoff + a month's labor over {cap:,.0f} bottles"},
+        {"Option": "Let the customer wait",
+         "Cost per bottle": f"${p['backorder_cost']:,.2f} per month late",
+         "Limits": "hurts on-time fulfillment; nothing may be owed in December"},
+    ]))
+
+
 def hybrid_start_guide(scn, expanded: bool) -> None:
-    """Where to start the hybrid, and why — using the student's own submitted plans."""
-    p = scn.params
-    with st.expander("Where to start: build the hybrid from your LEVEL plan (and why)",
+    """Build-it-yourself mode: where to start, and why — from the student's own plans."""
+    best = guide.best_start(scn)
+    with st.expander(f"Where to start: from your {best.upper()} plan (and why)",
                      expanded=expanded):
-        mets = {k: (SS["pieces"][k]["submitted"] or {}).get("metrics", {}).get(k)
-                for k in ("chase", "level")}
-        mets = {k: v for k, v in mets.items() if v}
-        if len(mets) == 2:
-            rows = []
-            for m, lab in (("Labor Cost", "Labor"), ("Hiring Cost", "Hiring"),
-                           ("Layoff Cost", "Layoffs"), ("Holding Cost", "Holding"),
-                           ("Backorder Cost", "Backorders"), ("Total Cost", "TOTAL")):
-                rows.append({"Your plans": lab, "Chase": f"${mets['chase'][m]:,.0f}",
-                             "Level": f"${mets['level'][m]:,.0f}"})
-            rows.append({"Your plans": "On-time fulfillment",
-                         "Chase": f"{mets['chase']['On-Time Fulfillment %']:.1f}%",
-                         "Level": f"{mets['level']['On-Time Fulfillment %']:.1f}%"})
-            rows.append({"Your plans": "Months ending with backorders",
-                         "Chase": f"{mets['chase']['Months With Backorders']:.0f}",
-                         "Level": f"{mets['level']['Months With Backorders']:.0f}"})
-            md_table(pd.DataFrame(rows))
-        st.markdown(
-            "**Why start from the level plan?** A hybrid keeps a steady *base* workforce and "
-            "uses short-term options — overtime, subcontracting, a little inventory — for the "
-            "peak. Your level plan already *is* that steady base, so you only have to fix its "
-            "weak months. Its problems sit in specific months (stock building up early, "
-            "customers waiting in the peak), which is exactly what overtime and subcontracting "
-            "are for. The chase plan's big cost — hiring and laying off — comes from changing "
-            "the workforce every month, so improving it means rebuilding the whole plan.")
-        req = float(p["service_requirement_pct"])
-        if len(mets) == 2:
-            lv, ch = mets["level"], mets["chase"]
-            if req > 0 and lv["On-Time Fulfillment %"] + 1e-9 < req:
-                st.markdown(f"**Your first target:** your level plan ships only "
-                            f"{lv['On-Time Fulfillment %']:.1f}% of demand on time; the hybrid "
-                            f"must reach {req:g}%. Find the months where its backorders appear.")
-            if ch["Total Cost"] < lv["Total Cost"]:
-                st.markdown("Your chase plan was cheaper — so once the peak is fixed, try "
-                            "borrowing from it: one or two workforce changes during the year "
-                            "(not twelve) can cut the level plan's holding cost.")
+        _plan_table(scn)
+        if best == "chase":
+            st.markdown(
+                "**Start from your chase plan — it is the cheaper one.** A hybrid improves a "
+                "plan by fixing its most expensive habit. Here regular labor is cheap compared "
+                "with holding a workforce you don't need, so following demand already does "
+                "well; the waste is in months where you pay a whole extra worker for only a "
+                "few hundred bottles. Overtime and subcontracting can cover those bottles "
+                "instead — check which is cheaper with the table below.")
+        else:
+            st.markdown(
+                "**Start from your level plan — it is the cheaper one.** Hiring and layoffs are "
+                "expensive here, so a steady workforce pays. Its weak spots are the months where "
+                "customers wait: use the capacity you already pay for first, then the cheapest "
+                "extra bottles (table below), only as much as needed.")
         st.markdown(
             "**Steps**\n"
-            "1. Copy your Level Plan's columns onto the Hybrid Plan sheet. For **Workers** and "
-            "**Regular Production**, paste *values* (Paste Special → Values) or type them — they "
-            "are now your decisions, not formulas pointing at the level planning cells.\n"
-            "2. Add the columns a hybrid also needs: overtime, subcontracting, total production "
-            "and their costs, and fill the hybrid planning cells.\n"
-            "3. Upload. The app checks your formulas and tests every limit; note which months "
-            "break one.\n"
-            "4. Fix those months with the cheapest extra bottles (below), one change at a time.\n"
-            "5. Try moving the base workforce up or down, or changing it once mid-year. Each "
-            "upload shows your total cost next to the chase and level plans — aim to be feasible "
-            "and cheaper than both.")
-        cap = scn.cap_month
-        hire_cycle = (p["hiring_cost"] + p["layoff_cost"] + p["regular_labor_cost"]) / cap
-        st.markdown("**What one extra bottle in a busy month costs you** (from your given data):")
-        md_table(pd.DataFrame([
-            {"Option": "Overtime", "Cost per bottle": f"${p['overtime_cost']:,.2f}",
-             "Limits": f"only when regular capacity is full; up to {p['overtime_pct']:.0%} of it"},
-            {"Option": "Subcontract", "Cost per bottle": f"${p['subcontract_cost']:,.2f}",
-             "Limits": f"up to {p['subcontract_capacity']:,.0f} bottles a month"},
-            {"Option": "Make it earlier and hold it",
-             "Cost per bottle": f"${p['holding_cost']:,.2f} per month held",
-             "Limits": "needs spare regular capacity in an earlier month (already paid for)"},
-            {"Option": "Let the customer wait",
-             "Cost per bottle": f"${p['backorder_cost']:,.2f} per month late",
-             "Limits": "hurts on-time fulfillment; nothing may be owed at the end of December"},
-            {"Option": "Hire a worker for one month",
-             "Cost per bottle": f"about ${hire_cycle:,.2f}",
-             "Limits": f"hire + layoff + a month's labor, spread over {cap:,.0f} bottles"},
-        ]))
+            f"1. Copy your {best.title()} Plan's columns onto the Hybrid Plan sheet. Paste "
+            "**Workers** and **Regular Production** as *values* (Paste Special → Values) — they "
+            "are now your decisions, not formulas pointing at the old planning cells.\n"
+            "2. Add the columns a hybrid also needs (overtime, subcontracting, total production "
+            "and their costs) and fill the hybrid planning cells.\n"
+            "3. Upload: the app checks the formulas and every limit.\n"
+            "4. Change one thing at a time where a cheaper source of bottles exists, and "
+            "upload again — your cost is shown next to the chase and level plans.")
+        _bottle_costs(scn)
+
+
+# ----------------------------------------------------------------------------------
+# Guided walkthrough
+# ----------------------------------------------------------------------------------
+def _ask(q, g: dict) -> bool:
+    """Render one question; True once it is answered (or revealed)."""
+    state = g["answers"].setdefault(q.qid, {"tries": 0, "ok": False})
+    fmt = (lambda v: guide.RULE_LABELS.get(v, v)) if q.qid == "c_rule" else str
+    if state["ok"]:
+        shown = fmt(q.answer) if q.kind == "choice" else (
+            ", ".join(m for m in L_MONTHS if m in q.answer) if q.kind == "months"
+            else f"{float(q.answer):,.2f}".rstrip("0").rstrip("."))
+        st.markdown(f"<div class='aa-hint'><div class='lvl'>"
+                    f"{'Revealed' if state.get('revealed') else '✔ Answered'}</div>"
+                    f"<b>{escape(q.prompt)}</b><br>{escape(shown)}<br>"
+                    f"<span style='opacity:.85'>{escape(q.why)}</span></div>",
+                    unsafe_allow_html=True)
+        return True
+    with st.container(border=True):
+        st.markdown(f"**{q.prompt}**")
+        if q.kind == "choice":
+            val = st.radio("Your answer", list(q.options), format_func=fmt, index=None,
+                           key=f"g_{q.qid}", label_visibility="collapsed")
+        elif q.kind == "months":
+            val = st.multiselect("Months", L_MONTHS, key=f"g_{q.qid}",
+                                 label_visibility="collapsed")
+        else:
+            val = st.number_input("Your answer", value=None, step=1.0, format="%.2f",
+                                  key=f"g_{q.qid}", label_visibility="collapsed")
+        c1, c2 = st.columns([1, 3])
+        if c1.button("Check answer", key=f"gc_{q.qid}", type="primary"):
+            if guide.check_answer(q, val):
+                state["ok"] = True
+            else:
+                state["tries"] += 1
+            save_state("guide")
+            st.rerun()
+        if state["tries"]:
+            st.warning(f"Not quite ({state['tries']} tr{'y' if state['tries'] == 1 else 'ies'}). "
+                       + q.nudge)
+        if state["tries"] >= 3 and c2.button("Show me the answer", key=f"gr_{q.qid}"):
+            state.update(ok=True, revealed=True)
+            save_state("guide")
+            st.rerun()
+    return False
+
+
+def guided_hybrid(scn, ps: dict) -> bool:
+    """The guided hybrid. Returns True once the student has reached the Excel task, so the
+    upload section and the verdict should be shown."""
+    g = ps.setdefault("guide", {"start": None, "answers": {}})
+    st.markdown("<div class='aa-card'><b>Guided hybrid.</b> You'll get a starting plan with "
+                "every column already built, then answer a few questions that lead you to a "
+                "better plan. You make each change yourself in Excel. (Prefer to build it all "
+                "yourself? Switch <i>Hybrid plan</i> in the sidebar.)</div>",
+                unsafe_allow_html=True)
+    st.markdown("#### 1 · Pick your starting point")
+    _plan_table(scn)
+    q0 = guide.start_question(scn)
+    if not _ask(q0, g):
+        return False
+    g["start"] = q0.answer.lower()
+    start = g["start"]
+
+    st.markdown("#### 2 · Get your starting plan")
+    st.write(f"Upload your current workbook here. The app fills the **Hybrid Plan** sheet with "
+             f"your {start} plan: all columns, formulas and totals, with Workers and Regular "
+             "Production as your decisions (green) and no overtime or subcontracting yet. "
+             "Anything already on the Hybrid Plan sheet is replaced; other sheets are untouched.")
+    seed = st.file_uploader("Workbook to add the starting plan to (.xlsx)", type=["xlsx"],
+                            key="hyb_seed")
+    if seed is not None:
+        data = seed.getvalue()
+        book, err = checker.read_book(data)
+        problems = [err] if err else checker.check_identity(book, scn, SS["student"]["sid"])
+        if problems:
+            for m in problems:
+                st.error(m)
+        else:
+            out = workbook.add_hybrid_start(data, scn, guide.starting_decision(scn, start))
+            st.download_button("⬇ Download workbook with the starting plan", out,
+                               file_name=seed.name.replace(".xlsx", "") + "_hybrid_start.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument."
+                                    "spreadsheetml.sheet", type="primary")
+            st.info("**Open it in Excel and save it** (so Excel calculates every formula) "
+                    "before you upload it below. Keep working in this file from now on.")
+
+    st.markdown("#### 3 · Questions")
+    track = guide.track_name(scn, start)
+    for step in guide.steps(scn, start):
+        if isinstance(step, guide.Task):
+            st.markdown(f"#### 4 · {step.title}")
+            st.markdown(f"<div class='aa-card'>{escape(step.text)}</div>", unsafe_allow_html=True)
+            g["track"] = track
+            return True
+        if not _ask(step, g):
+            return False
+    return True
+
+
+def guided_verdict(scn, ps: dict, res) -> None:
+    g = ps.get("guide") or {}
+    if not g.get("start") or res.plan is None:
+        return
+    v = guide.evaluate(scn, g["start"], res.plan)
+    st.markdown("#### 5 · How good is your hybrid?")
+    md_table(pd.DataFrame([{"Plan": "Your hybrid", "Total cost": f"${v.cost:,.0f}",
+                            "Feasible": "✔ yes" if v.feasible else "✖ no"},
+                           {"Plan": "Chase", "Total cost": f"${v.chase:,.0f}", "Feasible": ""},
+                           {"Plan": "Level", "Total cost": f"${v.level:,.0f}", "Feasible": ""}]))
+    for n in v.notes:
+        st.markdown(text.md(n))
+    if v.good:
+        saved = v.start_cost - v.cost
+        st.success("🎯 A good solution: feasible and "
+                   + (f"${saved:,.0f} cheaper than your starting plan — and cheaper than both "
+                      "pure strategies." if saved > 0.5 else
+                      "as cheap as the best pure strategy (nothing cheaper is possible here)."))
+        if _ask(guide.reflection(g["start"], guide.track_name(scn, g["start"])), g):
+            st.caption("Submit your hybrid plan below.")
+    elif v.feasible:
+        st.info("Feasible — now make it cheaper than both plans. Re-read the rule above and "
+                "check each month; upload after each change.")
 
 
 def show_guidance(key: str, scn) -> None:
@@ -745,7 +886,13 @@ def page_piece(key: str) -> None:
         nav_buttons(key)
         return
 
-    show_guidance(key, scn)
+    guided = key == "hybrid" and SS["hybrid_mode"] == "guided"
+    if guided:
+        if not guided_hybrid(scn, ps):
+            nav_buttons(key, next_disabled=True)
+            return
+    else:
+        show_guidance(key, scn)
     st.subheader("Upload & check")
     st.write("Save your workbook in Excel, then upload it here. Only the "
              f"**{checker.PIECE_TITLES[key].lower()}** is checked at this step.")
@@ -784,6 +931,8 @@ def page_piece(key: str) -> None:
             mine = res.metrics["hybrid"]["Total Cost"]
             st.caption(text.md(f"Your hybrid costs ${mine:,.0f} (if your formulas are right): "
                                + " · ".join(f"{k} ${v:,.0f}" for k, v in others.items())))
+    if guided:
+        guided_verdict(scn, ps, res)
     show_feedback(key, res, ps)
     if key != "summary" and res.cells:
         st.markdown("**Cell by cell** — every column you built, laid out like your sheet; hover "

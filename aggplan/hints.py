@@ -195,7 +195,8 @@ _COMMON: Dict[str, List[str]] = {
     ],
     "Overtime Cost": [
         "What do overtime bottles cost?",
-        "Each overtime bottle costs an extra amount on top of regular labor.",
+        "Every bottle made on overtime costs OTCost. Regular labor pays only for regular-time "
+        "capacity, so overtime bottles are charged separately.",
         "Multiply the Overtime Production cell by the name OTCost.",
         "Overtime Cost = Overtime Production × OTCost.",
     ],

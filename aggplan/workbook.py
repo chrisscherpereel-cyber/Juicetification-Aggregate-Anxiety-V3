@@ -550,6 +550,31 @@ def build_workbook(scn: Scenario, *, student_name: str = "", student_id: str = "
     return bio.getvalue()
 
 
+def add_hybrid_start(data: bytes, scn: Scenario, decision: Decision) -> bytes:
+    """The guided hybrid's starting point: the student's own workbook with the Hybrid Plan
+    sheet filled in — every column, formula and total — and the starting plan's workers and
+    production as the decisions (overtime and subcontracting 0). Anything already on the
+    Hybrid Plan sheet's grid and planning cells is replaced; other sheets are untouched."""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(data))
+    ws = wb[L.SHEET_HYBRID]
+    for j in range(L.FIRST_STUDENT_COL, L.LAST_STUDENT_COL + 1):
+        for r in range(1, L.TOTAL_ROW + 1):
+            ws.cell(row=r, column=j).value = None
+    for pc in L.PLANNING["hybrid"]:
+        ws[L.planning_ref("hybrid", pc.key)].value = None
+    _fill_plan(ws, scn, "hybrid", default_columns("hybrid"), decision)
+    for j, _ in enumerate(default_columns("hybrid")):          # decisions: green cells
+        concept = default_columns("hybrid")[j][0]
+        if concept in L.DECISIONS:
+            for i in range(L.N_MONTHS):
+                ws.cell(row=L.month_row(i), column=L.FIRST_STUDENT_COL + j).fill = \
+                    PatternFill("solid", fgColor="E2EFDA")
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
 def file_name(student_name: str, student_id: str, solution: bool = False) -> str:
     base = "".join(ch for ch in (student_name or student_id or "student")
                    if ch.isalnum() or ch in " -_").strip().replace(" ", "_") or "student"
