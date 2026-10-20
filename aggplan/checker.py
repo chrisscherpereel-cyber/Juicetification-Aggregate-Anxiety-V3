@@ -209,6 +209,7 @@ class CellCheck:
     status: str
     shown: str = ""
     diag: str = ""     # a specific observation about THIS cell (shown from hint level 2)
+    notice: str = ""   # right, but worth a look (doesn't block): e.g. a term left out that is 0
 
     @property
     def needs_work(self) -> bool:
@@ -276,6 +277,14 @@ class PieceResult:
                 and bool(self.graded) and all(c.status == "ok" for c in self.graded)
                 and not self.messages
                 and (self.feasible or not self.must_be_feasible))
+
+    def notice_items(self) -> Dict[str, List[CellCheck]]:
+        """Correct cells with something worth a look (they don't block completion)."""
+        out: Dict[str, List[CellCheck]] = {}
+        for c in self.cells:
+            if c.notice:
+                out.setdefault(c.item, []).append(c)
+        return out
 
     def problem_items(self) -> Dict[str, List[CellCheck]]:
         """Items (hint keys) with a real mistake on this attempt. Carried and blank cells are
@@ -394,11 +403,15 @@ _RANGE_RE = re.compile(r"(?<![A-Z$])\$?([A-Z]{1,2})\$?(\d+):\$?([A-Z]{1,2})\$?(\
 _STRING_RE = re.compile(r'"[^"]*"')
 
 
-def formula_refs(formula: str) -> List[Tuple[int, int]]:
+def formula_refs(formula: str, sheet: Optional[str] = None) -> List[Tuple[int, int]]:
     """(column index, row) of every cell on the SAME sheet a formula uses; ranges expanded
     within the area the checker reads. References to other sheets and text in quotes are
-    ignored."""
+    ignored — except references that name this same `sheet` ('Chase Plan'!F2 on the Chase
+    Plan sheet), which are the same as F2."""
     f = _STRING_RE.sub("", (formula or "").upper())
+    if sheet:
+        for q in (f"'{sheet.upper()}'!", f"{sheet.upper()}!"):
+            f = f.replace(q, "")
     f = _OTHER_SHEET_RE.sub("", f)
     out: List[Tuple[int, int]] = []
 
@@ -422,7 +435,7 @@ def circular_groups(book: Book, sheet: str) -> List[List[str]]:
     graph: Dict[str, List[str]] = {}
     for ref, cell in book.sheets.get(sheet, {}).items():
         if cell.formula:
-            graph[ref] = [f"{get_column_letter(c)}{r}" for c, r in formula_refs(cell.formula)]
+            graph[ref] = [f"{get_column_letter(c)}{r}" for c, r in formula_refs(cell.formula, sheet)]
     index: Dict[str, int] = {}
     low: Dict[str, int] = {}
     stack: List[str] = []
@@ -534,12 +547,13 @@ def _allowed(concept: str, kind: str) -> Tuple[set, set]:
 
 def wrong_column_refs(kind: str, concept: str, formula: str, row: int,
                       concept_of: Dict[str, str]) -> List[Tuple[str, str]]:
+    sheet = L.PLAN_SHEETS[kind]
     """Cells this formula uses that this column has no business using — e.g. Hires reading
     the Overtime column. The value can still look right by coincidence (both 0), so this is
     checked even when the number matches. Returns [(cell, the concept that column holds)]."""
     same, prev = _allowed(concept, kind)
     out = []
-    for c, r in formula_refs(formula):
+    for c, r in formula_refs(formula, sheet):
         letter = get_column_letter(c)
         other = concept_of.get(letter)
         if other is None or other == concept:
@@ -549,6 +563,91 @@ def wrong_column_refs(kind: str, concept: str, formula: str, row: int,
         elif r == row - 1 and r >= L.FIRST_ROW and other not in prev and other not in same:
             out.append((f"{letter}{r}", other))
     return out
+
+
+# What each column's formula must USE (same month unless "prev"). Each entry is a tuple of
+# alternatives: any one of them, referenced directly, satisfies it. "Demand" is column B;
+# "Production" is the column production comes from (Total Production on the hybrid, which can
+# also be satisfied by referencing all three of its parts).
+_NEEDS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+    "Regular Production": (("Demand",), ("Beginning Inventory",), ("Beginning Backorders",)),
+    "Workers": (("Regular Production",),),
+    "Regular Capacity": (("Workers",),),
+    "Total Production": (("Regular Production",), ("Overtime Production",),
+                         ("Subcontract Production",)),
+    "Hires": (("Workers", "Regular Capacity"),),
+    "Layoffs": (("Workers", "Regular Capacity"),),
+    "Ending Inventory": (("Demand",), ("Beginning Inventory",), ("Beginning Backorders",),
+                         ("Production",)),
+    "Ending Backorders": (("Demand",), ("Beginning Inventory",), ("Beginning Backorders",),
+                          ("Production",)),
+    "Labor Cost": (("Workers", "Regular Capacity"),),
+    "Hiring Cost": (("Hires",),), "Layoff Cost": (("Layoffs",),),
+    "Overtime Cost": (("Overtime Production",),), "Subcontract Cost": (("Subcontract Production",),),
+    "Holding Cost": (("Ending Inventory",),), "Backorder Cost": (("Ending Backorders",),),
+}
+_NEEDS_PREV: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+    "Beginning Inventory": (("Ending Inventory",),),
+    "Beginning Backorders": (("Ending Backorders",),),
+    "Hires": (("Workers", "Regular Capacity"),),
+    "Layoffs": (("Workers", "Regular Capacity"),),
+}
+_CHASE_ONLY_NEEDS = {"Regular Production", "Workers"}   # level: planning cells; hybrid: decisions
+
+
+def missing_inputs(kind: str, concept: str, formula: str, row: int,
+                   letter_of: Dict[str, str]) -> List[Tuple[str, str]]:
+    """What this column depends on but the formula leaves out: [(concept, its letter)].
+    Empty when the formula uses a helper or unrecognised column of the plan (it may carry the
+    missing term), or when the required column doesn't exist on the sheet."""
+    if concept in _CHASE_ONLY_NEEDS and kind != "chase":
+        return []
+    concept_of = {v: k for k, v in letter_of.items()}
+    same, prev = set(), set()
+    for c, r in formula_refs(formula, L.PLAN_SHEETS[kind]):
+        letter = get_column_letter(c)
+        if letter == "B" and r == row:
+            same.add("Demand")
+            continue
+        if not (L.FIRST_STUDENT_COL <= c <= L.LAST_STUDENT_COL) or r not in (row, row - 1):
+            continue
+        other = concept_of.get(letter)
+        if other is None:
+            return []                         # a helper column: can't tell what it holds
+        (same if r == row else prev).add(other)
+    prod = "Total Production" if kind == "hybrid" else "Regular Production"
+    parts = ("Regular Production", "Overtime Production", "Subcontract Production")
+
+    def ok(alts, used) -> bool:
+        for a in alts:
+            a = prod if a == "Production" else a
+            if a in used or (a == "Total Production" and all(p in used for p in parts
+                                                             if p in letter_of)):
+                return True
+            if a == "Regular Production" and "Total Production" in used and kind != "hybrid":
+                return True
+        return not any((prod if a == "Production" else a) in letter_of or a == "Demand"
+                       for a in alts)         # none of the options exists on this sheet
+
+    out = []
+    for alts in _NEEDS.get(concept, ()):
+        if not ok(alts, same):
+            a = prod if alts[0] == "Production" else alts[0]
+            out.append((a, "B" if a == "Demand" else letter_of.get(a, "?")))
+    if row > L.FIRST_ROW:
+        for alts in _NEEDS_PREV.get(concept, ()):
+            if not ok(alts, prev):
+                out.append((f"last month's {alts[0]}", letter_of.get(alts[0], "?")))
+    if concept == "Total Cost":
+        for c in L.COST_CONCEPTS[:-1]:
+            if c in letter_of and c not in same:
+                out.append((c, letter_of[c]))
+    return out
+
+
+def _missing_text(concept: str, missing: List[Tuple[str, str]]) -> str:
+    what = ", ".join(f"{m} ({x})" for m, x in missing[:3])
+    return f"this formula leaves out {what}, which {concept} depends on"
 
 
 # =========================================================================================
@@ -744,7 +843,7 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
             cell = book.cell(sheet, ref)
             col_label = f"{letter} · {cm.headings[letter]}"
             label = f"{cm.headings[letter]}, {scn.months[i]}"
-            diag = ""
+            diag, notice = "", ""
             if concept is None:                      # helper / unrecognised: shown, not graded
                 res.cells.append(CellCheck(sheet, ref, "helper", label, scn.months[i], col_label,
                                            "helper", _shown(cell)))
@@ -766,8 +865,23 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
                     diag = (f"The number happens to fit, but this formula uses {ref0} "
                             f"({other}), which {concept} doesn't depend on. Check which "
                             "column it should point at.")
+                elif st in ("ok", "carried") and cell.formula:
+                    miss = missing_inputs(kind, concept, cell.formula, L.month_row(i),
+                                          cm.by_concept)
+                    if miss and kind == "chase":
+                        # the left-out term is 0 here, so the value fits: point it out, but
+                        # don't block — it matters in the level and hybrid plans
+                        notice = ("Works here because that term is 0 in your chase plan, but "
+                                  + _missing_text(concept, miss) + ". In the level and hybrid "
+                                  "plans it isn't 0 — include it so the formula is right in "
+                                  "every month.")
+                    elif miss:
+                        st = "wrong"
+                        diag = ("The number happens to fit this month, but "
+                                + _missing_text(concept, miss) + ". Include it so the "
+                                "formula works in every month.")
             res.cells.append(CellCheck(sheet, ref, concept, label, scn.months[i], col_label, st,
-                                       _shown(cell), diag))
+                                       _shown(cell), diag, notice if st == "ok" else ""))
     loops = circular_groups(book, sheet)
     if loops:
         in_loop = {r for g in loops for r in g}
@@ -867,8 +981,9 @@ def _grade_summary(book: Book, scn: Scenario, res: PieceResult) -> None:
         st = "uncalc"
     else:
         got = str(cell.value).strip().lower()
-        uses_totals = cell.formula is None or "!" in cell.formula or any(
-            r == tc and c in (2, 3) for c, r in formula_refs(cell.formula))
+        refs = formula_refs(cell.formula, sheet) if cell.formula else []
+        uses_totals = (cell.formula is None or any(r == tc and c in (2, 3) for c, r in refs)
+                       or bool(_OTHER_SHEET_RE.search(cell.formula.upper())))   # plan totals
         if _ERR_RE.match(got.upper()):
             st = "error"
         elif not uses_totals:

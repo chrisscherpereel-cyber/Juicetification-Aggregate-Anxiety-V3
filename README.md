@@ -221,7 +221,7 @@ storage, on-time fulfillment, December backorders and inventory). It refuses, wi
 student can act on, a file that isn't this app's workbook, belongs to another student ID, was made
 for another scenario or configuration, has altered demand, or isn't an `.xlsx`.
 
-Two checks look at the formulas themselves:
+Three checks look at the formulas themselves:
 
 * **Circular references** on a plan sheet (cells whose formulas use each other in a loop — Excel
   then saves 0) are named, every cell in the loop is marked, and the piece can't be completed
@@ -233,6 +233,14 @@ Two checks look at the formulas themselves:
   number happens to fit* (e.g. `=MAX(0,H2-E3)` while overtime is 0). Month, Demand and helper
   columns are always allowed. On the Summary, the lower-cost answer must be a formula that
   compares the two TOTAL PLAN COST cells (`=B3`, which shows the word "Chase", is not accepted).
+* **Left-out inputs.** Each column's formula must use what it depends on — e.g. Ending
+  Inventory needs Demand, Beginning Inventory, Beginning Backorders and production (on the
+  hybrid, Total Production or all three of its parts). A formula that leaves one out can still
+  give the right number when that term is 0. On the **chase plan**, where backorders are 0, that
+  is a **notice** ("Works now, but…", ✔ with a small !) that doesn't block submitting; on the
+  **level and hybrid plans**, where the term is not always 0, the cell is marked **wrong**.
+  References that name the cell's own sheet (`'Level Plan'!H3`) count as same-sheet; a formula
+  that goes through a helper column isn't judged.
 
 The receipt and final report show each piece's first **and** last upload score and the score of
 every upload in between.
@@ -370,7 +378,8 @@ tests/                 pytest suite + Excel-calculated fixtures
 * Heading recognition covers common wording; an unusual heading is matched by its numbers when
   they are right, otherwise the student is asked for a clearer heading.
 * Two errors that cancel out can still pass a cell: the checker compares values and checks
-  which columns a formula uses, but doesn't evaluate the formula with other inputs.
+  which columns a formula uses (and leaves out), but doesn't evaluate the formula with other
+  inputs, so a wrong sign or operator on a 0 term isn't caught.
 * LibreOffice and Apple Numbers exports are not verified.
 
 ## License

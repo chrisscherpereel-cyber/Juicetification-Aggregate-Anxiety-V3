@@ -651,9 +651,11 @@ def grid_html(res: checker.PieceResult) -> str:
                 tds.append("<td></td>")
                 continue
             tip = escape(f"{c.ref}: {checker.STATUS_LABEL[c.status]}"
-                         + (f" (shows {c.shown})" if c.shown else ""))
+                         + (f" (shows {c.shown})" if c.shown else "")
+                         + (f" — note: {c.notice}" if c.notice else ""))
+            mark = "<sup>!</sup>" if c.notice else ""
             tds.append(f"<td title=\"{tip}\" style=\"background:{COLORS[c.status]}\">"
-                       f"{SYMBOL[c.status]}</td>")
+                       f"{SYMBOL[c.status]}{mark}</td>")
         body.append(f"<tr><th>{escape(row)}</th>{''.join(tds)}</tr>")
     narrow = " narrow" if len(g.columns) > 12 else ""
     return (f"<div class='aa-grid{narrow}'><table><thead><tr><th></th>{head}</tr></thead>"
@@ -666,6 +668,8 @@ def legend() -> None:
         f"{SYMBOL[k]}</span> {checker.STATUS_LABEL[k].split(' ', 1)[1]}</span>"
         for k in ("ok", "wrong", "carried", "typed", "blank", "error", "decision", "waiting",
                   "helper"))
+        + f"<span><span style='background:{COLORS['ok']};color:#222;padding:0 .35rem;"
+          "border-radius:3px'>✔<sup>!</sup></span> correct, but see the note</span>"
         + "</div>", unsafe_allow_html=True)
 
 
@@ -1062,6 +1066,12 @@ def show_feedback(key: str, res: checker.PieceResult, ps: dict) -> None:
                 st.caption(text.md(e))
             if any(c.status == "wrong" for c in cells):
                 st.markdown(hint_block(key, item, lvl), unsafe_allow_html=True)
+    notices = res.notice_items()
+    if notices:
+        st.markdown("**Works now, but…** (doesn't stop you submitting)")
+        for item, cells in notices.items():
+            refs = ", ".join(c.ref for c in cells[:6]) + (" …" if len(cells) > 6 else "")
+            st.caption(text.md(f"**{item_name(key, item, res)}** ({refs}): {cells[0].notice}"))
     if carried:
         st.caption(f"↪ {carried} more cell{'s' if carried != 1 else ''} only follow an earlier "
                    "mistake: their formulas look right and should correct themselves once the "

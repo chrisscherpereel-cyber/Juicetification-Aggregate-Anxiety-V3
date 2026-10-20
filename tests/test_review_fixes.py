@@ -203,3 +203,47 @@ def test_guided_improved_plan_can_be_submitted():
     at = _app_on_hybrid(plan)
     assert not at.exception
     assert any(b.label.startswith("Submit the hybrid") for b in at.button)
+
+
+# ---- formulas that leave out something their column depends on ---------------------------
+def test_chase_formula_missing_a_zero_term_gets_a_notice_not_a_mistake(key_book):
+    # the reviewer's chase Ending Inventory =C+E-B leaves out Beginning Backorders (always 0)
+    b = book_from(key_book, {(L.SHEET_CHASE, "I5"): Cell(0, "=MAX(0,C5+E5-B5)")})
+    res = checker.check_book(b, scn7(), "chase", SID)
+    c = _cell(res, "I5")
+    assert c.status == "ok" and "Beginning Backorders (D)" in c.notice
+    assert res.complete                                  # a notice never blocks
+    assert "Ending Inventory" in res.notice_items()
+
+
+def test_level_formula_missing_a_term_is_wrong_even_when_the_number_fits(key_book):
+    # May: no backorders yet, so leaving D out gives the right number — but not in general
+    b = book_from(key_book, {(L.SHEET_LEVEL, "I5"): Cell(12100, "=MAX(0,C5+E5-B5)")})
+    res = checker.check_book(b, scn7(), "level", SID)
+    c = _cell(res, "I5")
+    assert c.status == "wrong" and "Beginning Backorders (D)" in c.diag and not c.notice
+    assert not res.complete
+
+
+def test_hybrid_formula_missing_overtime_is_wrong(key_book):
+    # Ending Inventory from Regular Production only: right while overtime is 0
+    b = book_from(key_book, {(HYB, "M5"): Cell(14900, "=MAX(0,C5+G5-D5-B5)")})
+    res = checker.check_book(b, scn7(), "hybrid", SID)
+    assert _cell(res, "M5").status == "wrong"
+
+
+def test_complete_formulas_written_differently_pass(key_book):
+    b = book_from(key_book, {
+        (HYB, "M5"): Cell(14900, "=MAX(0,C5+G5+H5+I5-D5-B5)"),          # parts of Total Production
+        (L.SHEET_LEVEL, "M5"): Cell(0, "=LayoffCost*'Level Plan'!H5"),   # own sheet, by name
+        (L.SHEET_LEVEL, "I5"): Cell(12100, "=MAX(0,C5-D5+E5-B5)"),
+    })
+    for piece, ref in (("hybrid", "M5"), ("level", "M5"), ("level", "I5")):
+        c = _cell(checker.check_book(b, scn7(), piece, SID), ref)
+        assert c.status == "ok" and not c.notice, (piece, ref, c.diag, c.notice)
+
+
+def test_answer_key_has_no_notices():
+    for piece in ("chase", "level", "hybrid"):
+        res = checker.check_piece(fixture("key_seed7.xlsx"), scn7(), piece, SID)
+        assert not res.notice_items(), piece
