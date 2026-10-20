@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=7
+# tools/load_test.py samples the server's CPU and memory
+psutil>=5

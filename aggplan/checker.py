@@ -26,9 +26,11 @@ import hashlib
 import io
 import math
 import re
+import threading
 import zipfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 from openpyxl.utils import column_index_from_string, get_column_letter
@@ -89,6 +91,10 @@ class Book:
     sheets: Dict[str, Dict[str, Cell]]
     meta: Dict[str, str]
     sha256: str
+    names: Tuple[str, ...] = ()          # every sheet in the file (parsed or not)
+
+    def has_sheet(self, name: str) -> bool:
+        return name in self.sheets or name in self.names
 
     def cell(self, sheet: str, ref: str) -> Cell:
         return self.sheets.get(sheet, {}).get(ref, Cell())
@@ -112,44 +118,81 @@ def _container_problem(data: bytes) -> Optional[str]:
     return None
 
 
-def read_book(data: bytes) -> Tuple[Optional[Book], Optional[str]]:
-    """(Book, None) or (None, a message the student can act on). Never raises."""
+PIECE_SHEETS = {"chase": (L.SHEET_CHASE,), "level": (L.SHEET_LEVEL,),
+                "hybrid": (L.SHEET_HYBRID,),
+                "summary": (L.SHEET_SUMMARY, L.SHEET_CHASE, L.SHEET_LEVEL, L.SHEET_HYBRID)}
+
+# Parsed uploads, shared by every session in the process. A student usually uploads the same
+# file to several steps (and the app reruns while it stays in the uploader), so a parsed
+# file is reused instead of unzipped and parsed again. Bounded: oldest entries drop out.
+_BOOK_CACHE: "OrderedDict[tuple, Book]" = OrderedDict()
+_BOOK_CACHE_SIZE = 96
+_BOOK_LOCK = threading.Lock()
+
+
+def read_book(data: bytes, sheets: Optional[Sequence[str]] = None
+              ) -> Tuple[Optional[Book], Optional[str]]:
+    """(Book, None) or (None, a message the student can act on). Never raises.
+
+    `sheets` limits parsing to the sheets a check needs (plus the hidden id sheet); None
+    reads every sheet. openpyxl's read-only mode streams the XML instead of building a full
+    styled workbook — about 7x less CPU per upload, which is what lets one Streamlit
+    process absorb a whole class uploading at once."""
     problem = _container_problem(data)
     if problem:
         return None, problem
+    sha = hashlib.sha256(data).hexdigest()
+    ckey = (sha, None if sheets is None else tuple(sheets))
+    with _BOOK_LOCK:
+        if ckey in _BOOK_CACHE:
+            _BOOK_CACHE.move_to_end(ckey)
+            return _BOOK_CACHE[ckey], None
     try:
         from openpyxl import load_workbook
-        wf = load_workbook(io.BytesIO(data), data_only=False)
-        wv = load_workbook(io.BytesIO(data), data_only=True)
+        wf = load_workbook(io.BytesIO(data), data_only=False, read_only=True)
+        wv = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     except Exception as e:                                   # noqa: BLE001
         return None, f"The workbook could not be opened ({type(e).__name__}). Save it again as .xlsx."
-    sheets: Dict[str, Dict[str, Cell]] = {}
-    for name in wf.sheetnames:
-        cells: Dict[str, Cell] = {}
-        for row_f, row_v in zip(wf[name].iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS),
-                                wv[name].iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS)):
-            for cf, cv in zip(row_f, row_v):
-                if not hasattr(cf, "coordinate"):
-                    continue                                   # merged-cell placeholder
-                raw, formula = cf.value, None
-                if isinstance(raw, str) and raw.startswith("=") and cf.data_type == "f":
-                    formula = raw
-                elif type(raw).__name__ in ("ArrayFormula", "DataTableFormula"):
-                    formula = getattr(raw, "text", None) or "="
-                val = cv.value
-                if formula is None and val is None and raw is not None:
-                    val = raw
-                if formula is not None or val is not None:
-                    cells[cf.coordinate] = Cell(val, formula)
-        sheets[name] = cells
-    meta: Dict[str, str] = {}
-    if L.SHEET_META in wv.sheetnames:
-        ws = wv[L.SHEET_META]
-        for r in range(1, 30):
-            k, v = ws.cell(r, 1).value, ws.cell(r, 2).value
-            if k:
-                meta[str(k)] = "" if v is None else str(v)
-    return Book(sheets, meta, hashlib.sha256(data).hexdigest()), None
+    try:
+        names = tuple(wf.sheetnames)
+        wanted = [n for n in names if sheets is None or n in sheets]
+        parsed: Dict[str, Dict[str, Cell]] = {}
+        for name in wanted:
+            cells: Dict[str, Cell] = {}
+            for row_f, row_v in zip(
+                    wf[name].iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS),
+                    wv[name].iter_rows(min_row=1, max_row=READ_ROWS, max_col=READ_COLS)):
+                for cf, cv in zip(row_f, row_v):
+                    if not hasattr(cf, "coordinate"):
+                        continue                               # empty / merged placeholder
+                    raw, formula = cf.value, None
+                    if isinstance(raw, str) and raw.startswith("=") and cf.data_type == "f":
+                        formula = raw
+                    elif type(raw).__name__ in ("ArrayFormula", "DataTableFormula"):
+                        formula = getattr(raw, "text", None) or "="
+                    val = cv.value
+                    if formula is None and val is None and raw is not None:
+                        val = raw
+                    if formula is not None or val is not None:
+                        cells[cf.coordinate] = Cell(val, formula)
+            parsed[name] = cells
+        meta: Dict[str, str] = {}
+        if L.SHEET_META in names:
+            for k, v in wv[L.SHEET_META].iter_rows(min_row=1, max_row=30, max_col=2,
+                                                   values_only=True):
+                if k:
+                    meta[str(k)] = "" if v is None else str(v)
+    except Exception as e:                                   # noqa: BLE001
+        return None, f"The workbook could not be read ({type(e).__name__}). Save it again as .xlsx."
+    finally:
+        wf.close()
+        wv.close()
+    book = Book(parsed, meta, sha, names)
+    with _BOOK_LOCK:
+        _BOOK_CACHE[ckey] = book
+        while len(_BOOK_CACHE) > _BOOK_CACHE_SIZE:
+            _BOOK_CACHE.popitem(last=False)
+    return book, None
 
 
 # =========================================================================================
@@ -715,7 +758,7 @@ def check_book(book: Book, scn: Scenario, piece: str,
     if res.fatal:
         return res
     sheet = L.SHEET_SUMMARY if piece == "summary" else L.PLAN_SHEETS[piece]
-    if sheet not in book.sheets:
+    if not book.has_sheet(sheet):
         res.fatal.append(f"The '{sheet}' sheet is missing or was renamed. Keep the sheet names "
                          "as they were.")
         return res
@@ -735,7 +778,7 @@ def check_book(book: Book, scn: Scenario, piece: str,
 
 def check_piece(data: bytes, scn: Scenario, piece: str,
                 expected_sid: Optional[str] = None) -> PieceResult:
-    book, err = read_book(data)
+    book, err = read_book(data, PIECE_SHEETS[piece])
     if err:
         return PieceResult(piece, PIECE_TITLES[piece], fatal=[err],
                            sha256=hashlib.sha256(data or b"").hexdigest())

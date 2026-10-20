@@ -29,7 +29,7 @@ import student_store as store
 from juice_director import resolve_config, serve_manifest_if_requested
 from manifest import MANIFEST
 
-from aggplan import checker, engine, guide, hints, layout as L, report, text, workbook
+from aggplan import checker, engine, guide, hints, layout as L, saving, text, workbook
 from aggplan import identity as ident
 from aggplan.recognize import HELPER
 from aggplan.scenario import MONTHS as L_MONTHS, resolve_scenario
@@ -164,6 +164,12 @@ def go(step: str) -> None:
     SS["step"] = step
 
 
+def _report():
+    """The PDF module (and reportlab) load on first use, not at every cold start."""
+    from aggplan import report
+    return report
+
+
 # ---- saving (optional Dropbox store; lets a student resume and feeds the roster) ----
 def save_state(step: str) -> None:
     stu = SS.get("student")
@@ -171,13 +177,11 @@ def save_state(step: str) -> None:
         return
     scn = scenario()
     done = sum(submitted(k) for k in PIECES)
-    try:
-        store.save(GAME, stu["sid"], {"name": stu["name"], "seed": scn.seed,
-                                      "config_hash": scn.config_hash, "pieces": SS["pieces"],
-                                      "policy": SS["policy"], "hybrid_mode": SS["hybrid_mode"]},
-                   progress=done / len(PIECES), step=step)
-    except Exception:                                                  # noqa: BLE001
-        pass
+    state = {"name": stu["name"], "seed": scn.seed, "config_hash": scn.config_hash,
+             "pieces": SS["pieces"], "policy": SS["policy"], "hybrid_mode": SS["hybrid_mode"]}
+    # uploaded in the background so the student's screen never waits on the network
+    saving.save_later(f"{GAME}|{stu['sid']}", store.save, state, GAME, stu["sid"],
+                      progress=done / len(PIECES), step=step)
 
 
 def restore_state() -> None:
@@ -552,7 +556,7 @@ def piece_record(key: str) -> dict:
 def submit_piece(key: str, res: checker.PieceResult) -> None:
     ps = SS["pieces"][key]
     last = ps["attempts"][-1]
-    ps["submitted"] = {"at": report.now_in(str(scenario().params.get("report_timezone") or ""))
+    ps["submitted"] = {"at": _report().now_in(str(scenario().params.get("report_timezone") or ""))
                        .strftime("%Y-%m-%d %H:%M %Z").strip(),
                        "sha": res.sha256, "file": last["file"], "metrics": res.metrics,
                        "feasibility": res.feasibility, "recommendation": res.recommendation,
@@ -709,13 +713,19 @@ def guided_hybrid(scn, ps: dict) -> bool:
                             key="hyb_seed")
     if seed is not None:
         data = seed.getvalue()
-        book, err = checker.read_book(data)
-        problems = [err] if err else checker.check_identity(book, scn, SS["student"]["sid"])
+        sig = (hashlib.sha256(data).hexdigest(), start, scn.config_hash)
+        cached = SS.get("hyb_seed_out")
+        if not cached or cached[0] != sig:          # build once per file, not every click
+            book, err = checker.read_book(data, ())
+            problems = [err] if err else checker.check_identity(book, scn, SS["student"]["sid"])
+            out = None if problems else workbook.add_hybrid_start(
+                data, scn, guide.starting_decision(scn, start))
+            SS["hyb_seed_out"] = cached = (sig, problems, out)
+        _, problems, out = cached
         if problems:
             for m in problems:
                 st.error(m)
         else:
-            out = workbook.add_hybrid_start(data, scn, guide.starting_decision(scn, start))
             st.download_button("⬇ Download workbook with the starting plan", out,
                                file_name=seed.name.replace(".xlsx", "") + "_hybrid_start.xlsx",
                                mime="application/vnd.openxmlformats-officedocument."
@@ -895,6 +905,18 @@ def show_feedback(key: str, res: checker.PieceResult, ps: dict) -> None:
         st.markdown("**Still empty:** " + text.md(", ".join(names)))
 
 
+def _receipt(key: str, scn, sub: dict):
+    """The one-page receipt for a submitted piece: (pdf bytes, report id)."""
+    return _report().build_report(
+        scn, student_name=SS["student"]["name"], student_id=SS["student"]["sid"],
+        identity_label=identity.label, pieces=[piece_record(key)], final=True,
+        heading=f"Receipt — {checker.PIECE_TITLES[key]} submitted",
+        comparison=sub.get("metrics") or None, feasibility=sub.get("feasibility") or None,
+        recommendation=sub.get("recommendation", ""),
+        justification=sub.get("justification") if key == "summary" else None,
+        words=sub.get("words", 0))
+
+
 def page_piece(key: str) -> None:
     header(key)
     scn = scenario()
@@ -908,17 +930,15 @@ def page_piece(key: str) -> None:
         sub = ps["submitted"]
         n = len([a for a in ps["attempts"] if not a.get("fatal")])
         st.success(f"✔ Submitted {sub['at']} after {n} upload{'s' if n != 1 else ''}.")
-        rec = piece_record(key)
-        pdf, rid = report.build_report(
-            scn, student_name=SS["student"]["name"], student_id=SS["student"]["sid"],
-            identity_label=identity.label, pieces=[rec], final=True,
-            heading=f"Receipt — {checker.PIECE_TITLES[key]} submitted",
-            comparison=sub.get("metrics") or None, feasibility=sub.get("feasibility") or None,
-            recommendation=sub.get("recommendation", ""),
-            justification=sub.get("justification") if key == "summary" else None,
-            words=sub.get("words", 0))
+        receipts = SS.setdefault("receipts", {})
+        sig = (sub.get("sha"), sub.get("at"))
+        if receipts.get(key, {}).get("sig") != sig:   # build once per submission
+            receipts[key] = {"sig": sig, "pdf": None}
+        if receipts[key]["pdf"] is None:
+            receipts[key]["pdf"], receipts[key]["rid"] = _receipt(key, scn, sub)
+        pdf, rid = receipts[key]["pdf"], receipts[key]["rid"]
         st.download_button("⬇ Download receipt (PDF)", pdf,
-                           file_name=report.report_file_name(SS["student"]["name"], key, rid),
+                           file_name=_report().report_file_name(SS["student"]["name"], key, rid),
                            mime="application/pdf")
         st.caption("Upload the receipt to your LMS if your instructor collects each piece.")
         nav_buttons(key)
@@ -1022,7 +1042,7 @@ def page_report() -> None:
     if st.button("Create my final report (PDF)" if final else "Create a DRAFT report (PDF)",
                  type="primary" if final else "secondary"):
         hyb = (SS["pieces"]["hybrid"].get("submitted") or {}) if HYBRID_ON else {}
-        pdf, rid = report.build_report(
+        pdf, rid = _report().build_report(
             scn, student_name=stu["name"], student_id=stu["sid"], identity_label=identity.label,
             pieces=recs, final=final, heading="Final report" if final else "Progress report",
             comparison=summ.get("metrics") or None, feasibility=hyb.get("feasibility") or None,
@@ -1045,7 +1065,7 @@ def page_report() -> None:
     fp = SS.get("final_pdf")
     if fp and fp["final"] == final:
         st.download_button("⬇ Download report PDF", fp["pdf"],
-                           file_name=report.report_file_name(stu["name"], "final" if final
+                           file_name=_report().report_file_name(stu["name"], "final" if final
                                                              else "draft", fp["rid"]),
                            mime="application/pdf", type="primary")
         if fp.get("recorded") is True:

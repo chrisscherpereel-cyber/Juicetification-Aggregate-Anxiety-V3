@@ -243,6 +243,27 @@ levels after every upload — so a student can close the browser and resume — 
 completion record (report ID, per-piece uploads and help, workbook SHA-256s, plan costs) with the
 final report. Without a store everything works within a browser session.
 
+## Running a class of 30+ on Streamlit Community Cloud
+
+Verified with a real Streamlit server and 30 simulated browsers (`tools/load_test.py`); full
+method and numbers in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+| 30 students, a click every ~10 s each | Before tuning | Now |
+|---|---|---|
+| Median click | 233 ms | 176 ms |
+| 95% of clicks within | 26.7 s | 0.54 s |
+| Server CPU | 43% of a core | 28% |
+| Memory | 162 MB | 156 MB |
+
+What keeps it fast: uploads are read in openpyxl's read-only mode and only for the sheets that
+step needs (and cached by content), each student's workbook is built once, receipts once per
+submission, the guided starting plan once per file, and progress saves run in the
+background. 30 different uploads in the same second are all checked in ~1.6 s on the test
+machine. `.streamlit/config.toml` turns off the file watcher and usage stats for Cloud.
+
+If a class is much larger, or the Cloud container is throttled to its minimum CPU, clicks start
+to queue: ask Streamlit for more resources, or deploy the app twice and split sections.
+
 ## Run it
 
 Python 3.9+.
@@ -252,7 +273,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Tests: `pip install -r requirements-dev.txt && python -m pytest tests -q`. The checker tests run
+Tests: `pip install -r requirements-dev.txt && python -m pytest tests -q`.
+Capacity checks: `python tools/bench.py` and `python tools/load_test.py --students 30`. The checker tests run
 against workbooks **calculated by real Excel** in `tests/fixtures` — the answer key, a workbook
 with typical mistakes, one whose chase columns are in a student's own order and wording,
 and one with every policy switched (safety stock kept, fractional workers, orders owed).
@@ -274,9 +296,11 @@ aggplan/               no Streamlit import; unit-testable
   text.py              scenario text and Excel help
   workbook.py          builds the student workbook (and the answer key)
   report.py            piece receipts and the final report (PDF)
+  saving.py            background, per-student-ordered progress saves
   identity.py          signed assignment links (from V2)
 student_store.py, juice_director.py   shared Director modules (unchanged)
-tools/                 make_answer_key.py, make_assignment_links.py, recalc_in_excel.ps1
+tools/                 make_answer_key.py, make_assignment_links.py, recalc_in_excel.ps1,
+                       bench.py, load_test.py (+ load_app.py) for capacity checks
 tests/                 pytest suite + Excel-calculated fixtures
 ```
 

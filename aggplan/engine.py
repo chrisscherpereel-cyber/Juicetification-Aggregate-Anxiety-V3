@@ -23,6 +23,8 @@ Under worker_policy=partial the ROUNDUPs are dropped (fractional worker-equivale
 from __future__ import annotations
 
 import math
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Sequence
 
@@ -131,8 +133,24 @@ def reference_level(scn: Scenario) -> Decision:
     return Decision([workers_for(scn, rate)] * n, [rate] * n)
 
 
+_REF_CACHE: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
+_REF_LOCK = threading.Lock()
+
+
 def reference_plan(scn: Scenario, kind: str) -> pd.DataFrame:
-    return simulate(scn, reference_chase(scn) if kind == "chase" else reference_level(scn))
+    """The answer-key plan. Every check, guide question and verdict asks for it, so it is
+    computed once per scenario and kept (bounded); callers get their own copy."""
+    key = (scn.config_hash, scn.seed, kind)
+    with _REF_LOCK:
+        if key in _REF_CACHE:
+            _REF_CACHE.move_to_end(key)
+            return _REF_CACHE[key].copy()
+    df = simulate(scn, reference_chase(scn) if kind == "chase" else reference_level(scn))
+    with _REF_LOCK:
+        _REF_CACHE[key] = df
+        while len(_REF_CACHE) > 512:
+            _REF_CACHE.popitem(last=False)
+    return df.copy()
 
 
 # --------------------------------------------------------------------------- #

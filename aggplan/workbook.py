@@ -17,6 +17,10 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import io
+import json
+import threading
+from collections import OrderedDict
+from copy import copy
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook
@@ -77,10 +81,23 @@ def _put(ws, ref, value, *, font=None, fill=None, fmt=None, wrap=False, border=F
 
 
 def _input(ws, ref, fmt=None, fill=INPUT_FILL):
+    """A cell the student fills: colored, boxed, unlocked.
+
+    A workbook has ~1,200 of these. Setting fill/border/protection/format through openpyxl
+    re-hashes every style object for every cell, which made building a workbook the single
+    biggest CPU cost on the server. The first cell of each kind is styled normally; the
+    rest copy its finished style record."""
     c = ws[ref]
+    cache = ws.parent.__dict__.setdefault("_aa_input_styles", {})
+    key = (fill.fgColor.rgb, fmt)
+    tpl = cache.get(key)
+    if tpl is not None:
+        c._style = copy(tpl)
+        return c
     c.fill, c.border, c.protection = fill, BOX, UNLOCKED
     if fmt:
         c.number_format = fmt
+    cache[key] = copy(c._style)
     return c
 
 
@@ -523,10 +540,35 @@ def _fill_summary(wb, scn: Scenario, letters: Dict[str, Dict[str, str]]):
 # =========================================================================================
 # Public API
 # =========================================================================================
+_WB_CACHE: "OrderedDict[str, bytes]" = OrderedDict()
+_WB_LOCK = threading.Lock()
+
+
 def build_workbook(scn: Scenario, *, student_name: str = "", student_id: str = "",
                    game: Optional[str] = None, solution: bool = False,
                    hybrid_decision: Optional[Decision] = None,
                    columns: Optional[Dict[str, ColumnSpec]] = None) -> bytes:
+    """The student's workbook. A student's blank workbook is kept per process (bounded), so
+    a page refresh or a second browser tab serves the same file instead of building it again
+    (the same file also keeps its identification stamp)."""
+    if solution:
+        return _build(scn, student_name, student_id, game, solution, hybrid_decision, columns)
+    key = hashlib.sha256(json.dumps(
+        [scn.params, list(scn.demand), scn.seed, student_name, student_id, game],
+        sort_keys=True, default=str).encode()).hexdigest()
+    with _WB_LOCK:
+        if key in _WB_CACHE:
+            _WB_CACHE.move_to_end(key)
+            return _WB_CACHE[key]
+    data = _build(scn, student_name, student_id, game, False, None, None)
+    with _WB_LOCK:
+        _WB_CACHE[key] = data
+        while len(_WB_CACHE) > 256:
+            _WB_CACHE.popitem(last=False)
+    return data
+
+
+def _build(scn, student_name, student_id, game, solution, hybrid_decision, columns) -> bytes:
     pieces = _pieces(scn)
     wb = Workbook()
     _start_sheet(wb, scn, student_name, student_id)

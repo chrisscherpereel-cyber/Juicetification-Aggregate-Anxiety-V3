@@ -3,3 +3,14 @@ primaryColor = "#1F3864"
 
 [server]
 maxUploadSize = 5
+# Community Cloud: no live-reload file watching (it polls the repo and costs CPU for every
+# session's process); redeploys restart the app anyway.
+fileWatcherType = "none"
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+# drop a rerun that is superseded by a newer click instead of finishing it
+fastReruns = true
