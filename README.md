@@ -44,10 +44,18 @@ Labor Cost and Backorder Cost. After each upload the student sees how each headi
 
 * a **missing** column is reported as the question the plan can't answer yet (more specific on
   later uploads, ending with a suggested heading);
-* two columns that look the same are flagged as **duplicates**;
+* two columns that look the same are noted as **duplicates**: the first is checked, the others
+  are shown as helper columns (they don't block submitting);
+* a heading with *helper*, *original*, *scratch* or *note* in it is always a helper column;
 * an unclear heading whose numbers clearly match a column is **checked as that column**, with a
   request for a clearer heading;
 * unrecognised extra columns are treated as **helper columns** and left alone.
+
+The plan sheets colour exactly enough columns for a complete plan (every required column plus
+the optional Regular Capacity); the paler columns to the right are marked as spare room for
+helper columns. The **Excel Help** sheet has a *Patterns* section — never below zero
+(`MAX(0, …)`), whole workers (`ROUNDUP`), this month starts where last month ended, changes
+between months, the stock balance, `COUNTIF`, `IF` — as shapes, not answers.
 
 ## Help that grows with each attempt — never the answer
 
@@ -144,8 +152,11 @@ Both modes recommend the student's cheaper plan, with their own cost breakdown a
    cheaper one).
 2. *Get the starting plan* — the student uploads their workbook; the app fills the Hybrid Plan
    sheet with that plan (every column, formula and total built; Workers and Regular Production
-   as green decisions; no overtime or subcontracting) and hands it back. Other sheets are
-   untouched. The student opens it in Excel, saves, and uploads.
+   as green decisions; no overtime or subcontracting) and hands it back, with grey **helper
+   columns** after a gap: the starting workers and regular production as fixed numbers and
+   (whole workers) the leftover with one worker fewer. Because they never change, formulas can
+   use them without a circular reference. Other sheets are untouched. The student opens it in
+   Excel, saves, and uploads.
 3. *Questions*, with numbers from the student's scenario, checked as they answer (a nudge after
    a wrong try; the answer can be revealed after three):
    * **chase track** — "In February you make 8,500 bottles with 9 workers… how much paid
@@ -158,7 +169,8 @@ Both modes recommend the student's cheaper plan, with their own cost breakdown a
 4. *Make the change in Excel* — a numbered checklist with a worked example from the
    student's own numbers (e.g. February: Workers 9 → 8, Regular Production 8,500 → 8,000,
    Overtime 0 → 500), stressing the step that is easy to forget: a smaller crew makes less on
-   regular time.
+   regular time. It says to change only the green cells by typing numbers, and not to add a
+   Leftover column inside the plan.
 5. *Month-by-month coach* — after every upload, each month that breaks a limit is named with the
    exact cells to change, in the student's own numbers ("February: 8 workers can make only
    8,000 on regular time, but Regular Production is 8,500 — set it to 8,000 and Overtime to
@@ -167,12 +179,15 @@ Both modes recommend the student's cheaper plan, with their own cost breakdown a
    half-finished plan through the coach to a good solution.
 6. *How good is it?* — each upload compares the hybrid with both plans. A **good solution** is
    feasible, at least as cheap as both plans, and (where an improvement exists) cheaper than the
-   starting plan; then a short "why is it better?" question. Tests confirm that doing what the
-   walkthrough says reaches a good solution in every scenario family.
+   starting plan; then a short "why is it better?" question. **Submit appears only for a good
+   solution**: an unchanged starting plan has every formula right ("Formulas correct 209 / 209")
+   but is told to keep improving. Tests confirm that doing what the walkthrough says reaches a
+   good solution in every scenario family.
 
 **Build it yourself:** the student designs the Hybrid Plan sheet from scratch, with a "where to
 start" panel (their cost breakdown, the recommended starting plan and why, steps, and what one
-more bottle costs each way). The checker, feasibility tests and cell-by-cell grid are the same.
+more bottle costs each way). The checker, feasibility tests and cell-by-cell grid are the same;
+a hybrid that costs no less than the cheaper pure plan can be submitted, with a warning.
 
 ## Model rules
 
@@ -205,6 +220,22 @@ own decisions and the plan is also tested against every limit (capacity, overtim
 storage, on-time fulfillment, December backorders and inventory). It refuses, with a message the
 student can act on, a file that isn't this app's workbook, belongs to another student ID, was made
 for another scenario or configuration, has altered demand, or isn't an `.xlsx`.
+
+Two checks look at the formulas themselves:
+
+* **Circular references** on a plan sheet (cells whose formulas use each other in a loop — Excel
+  then saves 0) are named, every cell in the loop is marked, and the piece can't be completed
+  until the loop is broken. On the hybrid the message explains the usual cause: a formula in a
+  green decision cell that uses a column calculated from it.
+* **Wrong-column references.** Each column may use only what it depends on in the same month
+  (and, for carried-over columns, the month before), e.g. Hires may use Workers or Regular
+  Capacity but not Overtime. A formula that points elsewhere is marked wrong *even when its
+  number happens to fit* (e.g. `=MAX(0,H2-E3)` while overtime is 0). Month, Demand and helper
+  columns are always allowed. On the Summary, the lower-cost answer must be a formula that
+  compares the two TOTAL PLAN COST cells (`=B3`, which shows the word "Chase", is not accepted).
+
+The receipt and final report show each piece's first **and** last upload score and the score of
+every upload in between.
 
 Excel (Windows, Mac, web) is verified. Google Sheets works via *File → Download → Microsoft Excel
 (.xlsx)*. A file never saved by a spreadsheet program has no calculated values; the app says so.
@@ -338,7 +369,8 @@ tests/                 pytest suite + Excel-calculated fixtures
   student's computer).
 * Heading recognition covers common wording; an unusual heading is matched by its numbers when
   they are right, otherwise the student is asked for a clearer heading.
-* Two errors that cancel out can pass a cell; the checker sees values, and only "formula or typed".
+* Two errors that cancel out can still pass a cell: the checker compares values and checks
+  which columns a formula uses, but doesn't evaluate the formula with other inputs.
 * LibreOffice and Apple Numbers exports are not verified.
 
 ## License

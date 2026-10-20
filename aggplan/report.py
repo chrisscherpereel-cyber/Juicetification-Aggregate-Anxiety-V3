@@ -119,14 +119,19 @@ def build_report(scn: Scenario, *, student_name: str, student_id: str, identity_
     story.append(table(info, [1.4 * inch, 5.6 * inch], head=False))
 
     story.append(P("Pieces", h2))
-    rows = [["Piece", "Status", "Uploads", "First attempt", "Most help used", "Submitted"]]
+    rows = [["Piece", "Status", "Uploads", "First attempt", "Last attempt", "Most help used",
+             "Submitted"]]
     for p in pieces:
         lvl = int(p.get("help") or 0)
         rows.append([p["title"], p["status"], str(p.get("attempts", 0)), p.get("first") or "—",
-                     f"{lvl} · {LEVEL_NAMES[lvl]}" if lvl else "none",
+                     p.get("last") or "—", f"{lvl} · {LEVEL_NAMES[lvl]}" if lvl else "none",
                      p.get("submitted_at") or "—"])
-    story.append(table(rows, [1.35 * inch, 0.95 * inch, 0.65 * inch, 0.95 * inch,
-                              1.35 * inch, 1.75 * inch]))
+    story.append(table(rows, [1.1 * inch, 0.8 * inch, 0.6 * inch, 0.95 * inch, 0.95 * inch,
+                              1.2 * inch, 1.4 * inch]))
+    for p in pieces:
+        if p.get("history") and int(p.get("attempts", 0)) > 1:
+            story.append(P(_clean(f"{p['title']}, every upload (cells correct): "
+                                  f"{p['history']}", cmap), small))
     for p in pieces:
         if p.get("sha"):
             story.append(P(_clean(f"{p['title']}: {p.get('file', '')} · SHA-256 "

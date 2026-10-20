@@ -272,7 +272,7 @@ class PieceResult:
 
     @property
     def complete(self) -> bool:
-        return (self.readable and not any(n.kind in ("missing", "duplicate") for n in self.notes)
+        return (self.readable and not any(n.kind == "missing" for n in self.notes)
                 and bool(self.graded) and all(c.status == "ok" for c in self.graded)
                 and not self.messages
                 and (self.feasible or not self.must_be_feasible))
@@ -384,6 +384,171 @@ def _diag(kind: str, concept: str, i: int, cell: Cell, v, pv, scn: Scenario) -> 
     if concept in ("Hires", "Layoffs", "Beginning Inventory", "Beginning Backorders") and i == 0:
         return "January is a special case: there is no previous month in the table."
     return ""
+
+
+# =========================================================================================
+# Formula references: circular references, and formulas that point at the wrong column
+# =========================================================================================
+_OTHER_SHEET_RE = re.compile(r"(?:'[^']+'|[A-Za-z_][\w.]*)!\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?")
+_RANGE_RE = re.compile(r"(?<![A-Z$])\$?([A-Z]{1,2})\$?(\d+):\$?([A-Z]{1,2})\$?(\d+)")
+_STRING_RE = re.compile(r'"[^"]*"')
+
+
+def formula_refs(formula: str) -> List[Tuple[int, int]]:
+    """(column index, row) of every cell on the SAME sheet a formula uses; ranges expanded
+    within the area the checker reads. References to other sheets and text in quotes are
+    ignored."""
+    f = _STRING_RE.sub("", (formula or "").upper())
+    f = _OTHER_SHEET_RE.sub("", f)
+    out: List[Tuple[int, int]] = []
+
+    def add_range(m):
+        c1, c2 = sorted((column_index_from_string(m.group(1)), column_index_from_string(m.group(3))))
+        r1, r2 = sorted((int(m.group(2)), int(m.group(4))))
+        for c in range(c1, min(c2, READ_COLS) + 1):
+            for r in range(r1, min(r2, READ_ROWS) + 1):
+                out.append((c, r))
+        return " "
+
+    f = _RANGE_RE.sub(add_range, f)
+    for m in _REF_RE.finditer(f):
+        out.append((column_index_from_string(m.group(2)), int(m.group(4))))
+    return out
+
+
+def circular_groups(book: Book, sheet: str) -> List[List[str]]:
+    """Groups of cells on one sheet whose formulas depend on each other in a loop (Excel's
+    "circular reference"). Excel can't calculate them, so it saves 0 or stale values."""
+    graph: Dict[str, List[str]] = {}
+    for ref, cell in book.sheets.get(sheet, {}).items():
+        if cell.formula:
+            graph[ref] = [f"{get_column_letter(c)}{r}" for c, r in formula_refs(cell.formula)]
+    index: Dict[str, int] = {}
+    low: Dict[str, int] = {}
+    stack: List[str] = []
+    on: set = set()
+    groups: List[List[str]] = []
+    counter = [0]
+    for start in graph:                       # Tarjan's strongly connected components
+        if start in index:
+            continue
+        work = [(start, iter(graph.get(start, ())))]
+        index[start] = low[start] = counter[0]
+        counter[0] += 1
+        stack.append(start)
+        on.add(start)
+        while work:
+            node, it = work[-1]
+            nxt = next(it, None)
+            if nxt is not None:
+                if nxt not in graph:
+                    continue                  # a value, not a formula: can't loop
+                if nxt not in index:
+                    index[nxt] = low[nxt] = counter[0]
+                    counter[0] += 1
+                    stack.append(nxt)
+                    on.add(nxt)
+                    work.append((nxt, iter(graph[nxt])))
+                elif nxt in on:
+                    low[node] = min(low[node], index[nxt])
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[node])
+            if low[node] == index[node]:
+                comp = []
+                while True:
+                    x = stack.pop()
+                    on.discard(x)
+                    comp.append(x)
+                    if x == node:
+                        break
+                if len(comp) > 1 or node in graph.get(node, ()):
+                    groups.append(sorted(comp, key=lambda r: (int(re.sub(r"\D", "", r)),
+                                                              column_index_from_string(
+                                                                  re.sub(r"\d", "", r)))))
+    return groups
+
+
+def _circular_message(groups: List[List[str]], hybrid: bool) -> str:
+    cells = ", ".join(groups[0][:6]) + (" …" if len(groups[0]) > 6 else "")
+    more = f" (and {len(groups) - 1} more loop{'s' if len(groups) > 2 else ''})" if len(groups) > 1 else ""
+    msg = (f"**Circular reference:** {cells}{more} use each other's results in a loop, so "
+           "Excel can't calculate them (it shows 0 or an old number). Follow the formulas "
+           "from one of these cells until you get back to it, and break the loop.")
+    if hybrid:
+        msg += (" On the hybrid sheet this usually means a green decision cell (Workers, "
+                "Regular Production, Overtime, Subcontract) has a formula that uses another "
+                "column calculated from it. Type your decisions as numbers, or base a formula "
+                "only on fixed numbers such as Demand or a helper column with your starting "
+                "plan.")
+    return msg
+
+
+# What each column may use from the SAME month (a formula may also use anything those use).
+_USES: Dict[str, Tuple[str, ...]] = {
+    "Regular Production": ("Beginning Inventory", "Beginning Backorders"),
+    "Workers": ("Regular Production",),
+    "Regular Capacity": ("Workers",),
+    "Total Production": ("Regular Production", "Overtime Production", "Subcontract Production"),
+    "Hires": ("Workers", "Regular Capacity"),
+    "Layoffs": ("Workers", "Regular Capacity"),
+    "Ending Inventory": ("Beginning Inventory", "Beginning Backorders", "Regular Production",
+                         "Total Production", "Ending Backorders"),
+    "Ending Backorders": ("Beginning Inventory", "Beginning Backorders", "Regular Production",
+                          "Total Production", "Ending Inventory"),
+    "Labor Cost": ("Workers", "Regular Capacity"),
+    "Hiring Cost": ("Hires",), "Layoff Cost": ("Layoffs",),
+    "Overtime Cost": ("Overtime Production",), "Subcontract Cost": ("Subcontract Production",),
+    "Holding Cost": ("Ending Inventory",), "Backorder Cost": ("Ending Backorders",),
+    "Total Cost": tuple(c for c in L.COST_CONCEPTS if c != "Total Cost"),
+}
+# ... and from the PREVIOUS month.
+_USES_PREV: Dict[str, Tuple[str, ...]] = {
+    "Beginning Inventory": ("Ending Inventory",), "Beginning Backorders": ("Ending Backorders",),
+    "Hires": ("Workers", "Regular Capacity"), "Layoffs": ("Workers", "Regular Capacity"),
+}
+
+
+def _closure(concept: str, kind: str) -> set:
+    seen, todo = set(), [concept]
+    while todo:
+        c = todo.pop()
+        if c in seen:
+            continue
+        seen.add(c)
+        if kind == "hybrid" and c in L.DECISIONS:
+            continue                          # the student's own numbers: nothing upstream
+        todo.extend(_USES.get(c, ()))
+    return seen
+
+
+def _allowed(concept: str, kind: str) -> Tuple[set, set]:
+    same = _closure(concept, kind)
+    prev: set = set()
+    for c in same:
+        for q in _USES_PREV.get(c, ()):
+            prev |= _closure(q, kind)
+    return same, prev
+
+
+def wrong_column_refs(kind: str, concept: str, formula: str, row: int,
+                      concept_of: Dict[str, str]) -> List[Tuple[str, str]]:
+    """Cells this formula uses that this column has no business using — e.g. Hires reading
+    the Overtime column. The value can still look right by coincidence (both 0), so this is
+    checked even when the number matches. Returns [(cell, the concept that column holds)]."""
+    same, prev = _allowed(concept, kind)
+    out = []
+    for c, r in formula_refs(formula):
+        letter = get_column_letter(c)
+        other = concept_of.get(letter)
+        if other is None or other == concept:
+            continue                          # Month, Demand, helper columns: fine
+        if r == row and other not in same:
+            out.append((f"{letter}{r}", other))
+        elif r == row - 1 and r >= L.FIRST_ROW and other not in prev and other not in same:
+            out.append((f"{letter}{r}", other))
+    return out
 
 
 # =========================================================================================
@@ -593,8 +758,23 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
                             _local(kind, concept, i, pr.values, pv, scn), _tol(concept), require)
                 diag = (_diag(kind, concept, i, cell, pr.values, pv, scn)
                         if st in ("wrong", "error") else "")
+                bad = (wrong_column_refs(kind, concept, cell.formula, L.month_row(i), concept_of)
+                       if st in ("ok", "carried") and cell.formula else [])
+                if bad:
+                    ref0, other = bad[0]
+                    st = "wrong"
+                    diag = (f"The number happens to fit, but this formula uses {ref0} "
+                            f"({other}), which {concept} doesn't depend on. Check which "
+                            "column it should point at.")
             res.cells.append(CellCheck(sheet, ref, concept, label, scn.months[i], col_label, st,
                                        _shown(cell), diag))
+    loops = circular_groups(book, sheet)
+    if loops:
+        in_loop = {r for g in loops for r in g}
+        for c in res.cells:
+            if c.ref in in_loop and c.status != "helper":
+                c.status, c.diag = "error", "Part of a circular reference."
+        res.messages.append(_circular_message(loops, kind == "hybrid"))
     if pr.key is None:
         return
     for concept, letter in order:
@@ -680,14 +860,19 @@ def _grade_summary(book: Book, scn: Scenario, res: PieceResult) -> None:
     local = None
     if _f(sc, sl):
         local = {"chase", "level"} if abs(sc - sl) < 0.5 else ({"chase"} if sc < sl else {"level"})
+    uses_totals = True
     if cell.blank:
         st = "blank"
     elif cell.formula is not None and cell.value is None:
         st = "uncalc"
     else:
         got = str(cell.value).strip().lower()
+        uses_totals = cell.formula is None or "!" in cell.formula or any(
+            r == tc and c in (2, 3) for c, r in formula_refs(cell.formula))
         if _ERR_RE.match(got.upper()):
             st = "error"
+        elif not uses_totals:
+            st = "wrong"
         elif got in want:
             st = "typed" if require and cell.formula is None else "ok"
         elif local and got in local:
@@ -695,7 +880,10 @@ def _grade_summary(book: Book, scn: Scenario, res: PieceResult) -> None:
         else:
             st = "wrong"
     res.cells.append(CellCheck(sheet, L.LOWER_COST_CELL, "summary:lower", "Lower-cost plan",
-                               "Lower-cost plan", "Answer", st, _shown(cell)))
+                               "Lower-cost plan", "Answer", st, _shown(cell),
+                               "" if uses_totals else
+                               f"This formula doesn't compare the two TOTAL PLAN COST cells "
+                               f"(B{tc} and C{tc}), so it won't follow your plans."))
     cell = book.cell(sheet, L.SAVINGS_CELL)
     st = _judge(cell, abs(kc - kl), abs(sc - sl) if _f(sc, sl) else None, 0.5, require)
     res.cells.append(CellCheck(sheet, L.SAVINGS_CELL, "summary:savings", "Savings",

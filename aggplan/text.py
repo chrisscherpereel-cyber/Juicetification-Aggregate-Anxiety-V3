@@ -156,6 +156,32 @@ EXCEL_FUNCTIONS = [
     ("ABS", "=ABS(A1-B1)", "size of a difference, without the minus sign"),
 ]
 
+# Patterns: how a planning question becomes a formula (the shape, never the answer).
+EXCEL_PATTERNS = [
+    ("Never below zero", "=MAX(0, have - need)",
+     "Stock, backorders, hires and layoffs can't be negative. MAX(0, …) keeps the result at 0 "
+     "when the subtraction would go below zero."),
+    ("Whole things to cover a need", "=ROUNDUP(need / per_unit, 0)",
+     "How many whole workers make enough bottles? Divide what you need by what one worker "
+     "makes, then round UP — rounding down leaves you short."),
+    ("This month starts where last month ended", "=last month's ending cell",
+     "Each month's beginning value points at the row above. January has no row above: it uses "
+     "the given starting value (a name such as BeginInv)."),
+    ("A change between months", "=MAX(0, this month - last month)",
+     "An increase only (hires); swap the two for a decrease only (layoffs). January compares "
+     "with the given starting value."),
+    ("Stock balance", "start + made - owed - demand",
+     "What you have after the month: bottles on the shelf, plus what you made, minus orders "
+     "still owed from before, minus this month's demand. If it is above 0 it's ending "
+     "inventory; below 0 the shortfall is ending backorders — two MAX(0, …) formulas, one "
+     "each way."),
+    ("Count the months that…", '=COUNTIF(range, ">0")',
+     "Counts the cells in a range that meet a condition, e.g. months that end with "
+     "backorders."),
+    ("Pick a word with a test", '=IF(test, "this", "that")',
+     "For an answer that should follow your numbers, e.g. which plan costs less."),
+]
+
 EXCEL_ERRORS = [
     ("#DIV/0!", "you divided by zero or by an empty cell — check what is right of the /"),
     ("#NAME?", "Excel does not know a word in the formula — check the spelling of a name "
@@ -163,4 +189,8 @@ EXCEL_ERRORS = [
     ("#REF!", "the formula points at a cell that was deleted — undo (Ctrl+Z) and retype"),
     ("#VALUE!", "text where a number was expected — a cell holds words or a stray space"),
     ("####", "not an error: the column is too narrow; widen it"),
+    ("Circular reference", "a formula uses its own result, directly or through other cells — "
+                           "Excel then shows 0. Follow the arrows (Formulas ▸ Error Checking ▸ "
+                           "Circular References) and break the loop. On the hybrid sheet, type "
+                           "your decisions as numbers."),
 ]

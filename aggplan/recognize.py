@@ -65,6 +65,8 @@ def classify(heading, kind: str) -> Optional[str]:
     if not h.strip():
         return None
     tokens = h.split()
+    if _has(h, ("helper", "scratch", "original", "orig")) or "note" in tokens:
+        return HELPER                         # the student says it's a working column
     costy = "$" in raw or _has(h, ("cost", "expense", "wage", "payroll", "salary",
                                    "salaries", "penalty", "charge", "spend",
                                    "severance"))

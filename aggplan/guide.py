@@ -129,9 +129,16 @@ def _chase_checklist(scn: Scenario, m: dict) -> str:
     w, prod, rem = m["workers"], m["prod"], m["rem"]
     lim = (w - 1) * cap * p["overtime_pct"]
     return (
-        "On the **Hybrid Plan** sheet, check every month:\n\n"
+        "On the **Hybrid Plan** sheet, check every month.\n\n"
+        "**Change only the green cells, and type the new numbers in.** A formula in a green "
+        "cell that uses a column calculated from the green cells (Total Production, Ending "
+        "Inventory, costs …) makes a circular reference (Excel then "
+        "shows 0). Don't add a Leftover column inside your plan either — the grey helper "
+        "columns on the right hold your starting plan's fixed numbers for that.\n\n"
         "1. **Leftover** = Regular Production − (Workers − 1) × capacity per worker — the "
-        "bottles you keep the last worker for.\n"
+        "bottles you keep the last worker for. It's already worked out in the grey column "
+        "**Helper: leftover with one worker fewer** (from your starting plan, so it doesn't "
+        "change as you edit).\n"
         f"2. If the leftover is **under about {_n(brk)} bottles** AND **no more than the overtime "
         f"limit for one worker fewer** ((Workers − 1) × {_n(cap)} × {p['overtime_pct']:.0%}), "
         "change **three cells** in that month:\n"
@@ -151,7 +158,12 @@ def _level_checklist(scn: Scenario, w: float, rate: float) -> str:
     p, cap = scn.params, scn.cap_month
     return (
         "On the **Hybrid Plan** sheet, go through the months **in order** (stock and "
-        "backorders carry forward, so a change in one month affects the next):\n\n"
+        "backorders carry forward, so a change in one month affects the next).\n\n"
+        "**Change only the green cells, and type the new numbers in.** A formula in a green "
+        "cell that uses a column calculated from the green cells (Total Production, Ending "
+        "Inventory, costs …) makes a circular reference (Excel then "
+        "shows 0). The grey helper columns on the right keep your starting plan for "
+        "comparison.\n\n"
         "1. Find the first month that ends with backorders.\n"
         f"2. Raise its **Regular Production** — up to the crew's capacity of {_n(w * cap)} "
         f"(you make {_n(rate)}, so up to {_n(w * cap - rate)} more, already paid for).\n"

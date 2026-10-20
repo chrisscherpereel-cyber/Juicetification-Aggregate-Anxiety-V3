@@ -699,11 +699,14 @@ def run_check(key: str, up) -> None:
 def piece_record(key: str) -> dict:
     ps = SS["pieces"][key]
     sub = ps.get("submitted")
-    first = next((a for a in ps["attempts"] if not a.get("fatal")), None)
+    ok = [a for a in ps["attempts"] if not a.get("fatal")]
+    first, last = (ok[0], ok[-1]) if ok else (None, None)
     return {"title": checker.PIECE_TITLES[key],
             "status": "Submitted" if sub else ("In progress" if ps["attempts"] else "Not started"),
-            "attempts": len([a for a in ps["attempts"] if not a.get("fatal")]),
+            "attempts": len(ok),
             "first": f"{first['ok']} / {first['total']} correct" if first else "",
+            "last": f"{last['ok']} / {last['total']} correct" if last else "",
+            "history": " → ".join(f"{a['ok']}/{a['total']}" for a in ok),
             "submitted_at": sub["at"] if sub else "",
             "help": max(list(ps["help"].values()) + list(ps["colhelp"].values()) + [0]),
             "file": sub["file"] if sub else "", "sha": sub["sha"] if sub else ""}
@@ -861,10 +864,13 @@ def guided_hybrid(scn, ps: dict) -> bool:
     start = g["start"]
 
     st.markdown("#### 2 · Get your starting plan")
-    st.write(f"Upload your current workbook here. The app fills the **Hybrid Plan** sheet with "
-             f"your {start} plan: all columns, formulas and totals, with Workers and Regular "
-             "Production as your decisions (green) and no overtime or subcontracting yet. "
-             "Anything already on the Hybrid Plan sheet is replaced; other sheets are untouched.")
+    st.write(f"Upload your **current** workbook here (the one with your submitted chase and "
+             f"level plans). The app fills the **Hybrid Plan** sheet with your {start} plan: all "
+             "columns, formulas and totals, with Workers and Regular Production as your "
+             "decisions (green) and no overtime or subcontracting yet. Grey **helper columns** "
+             "on the right keep your starting plan's numbers fixed, so you can compare against "
+             "them as you change the green cells. Anything already on the Hybrid Plan sheet is "
+             "replaced; other sheets are untouched.")
     seed = st.file_uploader("Workbook to add the starting plan to (.xlsx)", type=["xlsx"],
                             key="hyb_seed")
     if seed is not None:
@@ -903,10 +909,10 @@ def guided_hybrid(scn, ps: dict) -> bool:
     return True
 
 
-def guided_verdict(scn, ps: dict, res) -> None:
+def guided_verdict(scn, ps: dict, res):
     g = ps.get("guide") or {}
     if not g.get("start") or res.plan is None:
-        return
+        return None
     v = guide.evaluate(scn, g["start"], res.plan)
     st.markdown("#### 5 · How good is your hybrid?")
     md_table(pd.DataFrame([{"Plan": "Your hybrid", "Total cost": f"${v.cost:,.0f}",
@@ -941,6 +947,7 @@ def guided_verdict(scn, ps: dict, res) -> None:
     elif v.feasible and not opps:
         st.info("Feasible — now make it cheaper than both plans. Re-read the checklist above "
                 "and check each month; upload after each change.")
+    return v
 
 
 def show_guidance(key: str, scn) -> None:
@@ -1014,8 +1021,11 @@ def show_columns(key: str, res: checker.PieceResult, ps: dict) -> None:
             lvl = max(1, ps["colhelp"].get(n.concept, 0))
             st.warning(hints.column_hint(key, n.concept, lvl))
         elif n.kind == "duplicate":
-            st.warning(f"Columns {' and '.join(n.letters)} both look like **{n.concept}**. Keep "
-                       "one, or give the other a heading that says what makes it different.")
+            first, extra = n.letters[0], ", ".join(n.letters[1:])
+            st.info(f"Columns {' and '.join(n.letters)} all look like **{n.concept}**. Column "
+                    f"{first} is checked as {n.concept}; {extra} is treated as a helper column "
+                    "(shown, not checked). If that's the wrong way round, put the word "
+                    "**helper** in the extra column's heading.")
         elif n.kind == "guessed":
             st.info(f"Column {n.letters[0]} (“{n.heading}”) behaves like **{n.concept}**, so it "
                     "was checked as that. Give it a clearer heading so a reader knows too.")
@@ -1131,8 +1141,13 @@ def page_piece(key: str) -> None:
     for msg in res.messages:
         st.warning(msg)
     c1, c2 = st.columns([1, 2])
-    c1.metric("Cells correct", f"{res.n_ok} / {res.n_total}")
+    c1.metric("Formulas correct" if key == "hybrid" else "Cells correct",
+              f"{res.n_ok} / {res.n_total}")
     c2.progress(res.n_ok / max(1, res.n_total))
+    if key == "hybrid":
+        c2.caption("This counts cells calculated correctly from your decisions. Whether the "
+                   "plan itself is good — cheaper than chase and level, within every limit — "
+                   "is checked below.")
     if key != "summary":
         show_columns(key, res, ps)
     if res.feasibility:
@@ -1145,8 +1160,7 @@ def page_piece(key: str) -> None:
             mine = res.metrics["hybrid"]["Total Cost"]
             st.caption(text.md(f"Your hybrid costs ${mine:,.0f} (if your formulas are right): "
                                + " · ".join(f"{k} ${v:,.0f}" for k, v in others.items())))
-    if guided:
-        guided_verdict(scn, ps, res)
+    verdict = guided_verdict(scn, ps, res) if guided else None
     show_feedback(key, res, ps)
     if key != "summary" and res.cells:
         st.markdown("**Cell by cell** — every column you built, laid out like your sheet; hover "
@@ -1163,8 +1177,20 @@ def page_piece(key: str) -> None:
                                 "Status": checker.STATUS_LABEL[c.status],
                                 "Your value": c.shown or "—"} for c in res.cells]))
 
-    if res.complete:
+    improve = (res.complete and guided and verdict is not None and not verdict.good)
+    if improve:
+        st.info("Every formula is right, but this plan isn't better than your starting plan "
+                f"yet (${verdict.cost:,.0f} vs ${verdict.start_cost:,.0f}). Follow the "
+                "checklist above, change the green cells, and upload again. You can submit "
+                "once your hybrid beats both pure strategies.")
+    elif res.complete:
         st.success(f"🎉 Your **{checker.PIECE_TITLES[key].lower()}** is complete and correct.")
+        if key == "hybrid" and not guided and "hybrid" in res.metrics:
+            best = min((SS["pieces"][k]["submitted"]["metrics"][k]["Total Cost"]
+                        for k in ("chase", "level") if submitted(k)), default=None)
+            if best is not None and res.metrics["hybrid"]["Total Cost"] >= best - 0.5:
+                st.warning("Your hybrid costs no less than your cheaper pure plan. You can "
+                           "submit it, but a hybrid should mix the levers to beat both.")
         if st.button(f"Submit the {checker.PIECE_TITLES[key].lower()}", type="primary"):
             submit_piece(key, res)
             st.rerun()
@@ -1184,6 +1210,7 @@ def page_report() -> None:
     recs = [piece_record(k) for k in PIECES]
     md_table(pd.DataFrame([{"Piece": r["title"], "Status": r["status"],
                             "Uploads": r["attempts"], "First attempt": r["first"] or "—",
+                            "Last attempt": r["last"] or "—",
                             "Most help used": (f"{r['help']} · {hints.LEVEL_NAMES[r['help']]}"
                                                if r["help"] else "none"),
                             "Submitted": r["submitted_at"] or "—"} for r in recs]))

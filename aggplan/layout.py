@@ -154,7 +154,8 @@ SUMMARY_ROWS: List[SummaryRow] = [
     SummaryRow("Total Layoffs", "Total workers laid off", "over the whole year"),
     SummaryRow("Peak Workforce", "Largest workforce", "the biggest month"),
     SummaryRow("Peak Inventory", "Largest ending inventory (storage needed)", "the biggest month"),
-    SummaryRow("Months With Backorders", "Months ending with backorders", "a count of months"),
+    SummaryRow("Months With Backorders", "Months ending with backorders",
+               'a count of months: =COUNTIF(range, ">0") counts the cells above zero'),
 ]
 SUMMARY_FIRST_ROW = SUMMARY_HEAD_ROW + 1
 

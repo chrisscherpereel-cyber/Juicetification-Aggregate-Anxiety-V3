@@ -42,6 +42,9 @@ GIVEN_FONT = Font(color="1F4E9E")
 GIVEN_FILL = PatternFill("solid", fgColor="FFF2CC")       # given data: blue on light yellow
 INPUT_FILL = PatternFill("solid", fgColor="DDEBF7")       # your formulas: light blue
 HEADING_FILL = PatternFill("solid", fgColor="FCE4D6")     # your column headings: peach
+SPARE_FILL = PatternFill("solid", fgColor="F3F8FC")       # spare room for helper columns
+SPARE_HEAD_FILL = PatternFill("solid", fgColor="FDF3EC")
+HELPER_FILL = PatternFill("solid", fgColor="EDEDED")      # app-made helper columns: grey
 NA_FILL = PatternFill("solid", fgColor="EDEDED")
 HEAD_FILL = PatternFill("solid", fgColor="1F3864")
 HEAD_FONT = Font(bold=True, color="FFFFFF")
@@ -261,14 +264,16 @@ def _plan_sheet(wb, scn: Scenario, kind: str):
     ws["C1"].comment = Comment("Type your first column heading here, then continue to the right. "
                                "One column for each question your plan must answer.",
                                "Aggregate Anxiety")
+    last_main = L.FIRST_STUDENT_COL + len(L.REQUIRED[kind]) + len(L.OPTIONAL[kind]) - 1
     for j in range(L.FIRST_STUDENT_COL, L.LAST_STUDENT_COL + 1):
         letter = get_column_letter(j)
+        spare = j > last_main
         ws.column_dimensions[letter].width = 13
-        h = _input(ws, f"{letter}1", fill=HEADING_FILL)
+        h = _input(ws, f"{letter}1", fill=SPARE_HEAD_FILL if spare else HEADING_FILL)
         h.alignment, h.font = CENTER, BOLD
         for i in range(L.N_MONTHS):
-            _input(ws, f"{letter}{L.month_row(i)}", "#,##0.##")
-        _input(ws, f"{letter}{L.TOTAL_ROW}", "#,##0.##", TOTAL_FILL).font = BOLD
+            _input(ws, f"{letter}{L.month_row(i)}", "#,##0.##", SPARE_FILL if spare else INPUT_FILL)
+        _input(ws, f"{letter}{L.TOTAL_ROW}", "#,##0.##", SPARE_FILL if spare else TOTAL_FILL).font = BOLD
     for i in range(L.N_MONTHS):
         r = L.month_row(i)
         _put(ws, f"A{r}", scn.months[i], font=GIVEN_FONT, fill=GIVEN_FILL, border=True)
@@ -289,7 +294,9 @@ def _plan_sheet(wb, scn: Scenario, kind: str):
     r = p0 + len(L.PLANNING[kind]) + 1
     _put(ws, f"A{r}", _PLAN_INTRO[kind], font=BOLD)
     _put(ws, f"A{r + 1}", "Row 1: your headings. Rows 2–13: your formulas for January–December. "
-                          "Row 14: yearly totals. Add helper columns if they help you think.",
+                          "Row 14: yearly totals. A complete plan fits in the coloured "
+                          "columns; the pale columns to the right are spare room for helper "
+                          "columns — you don't have to fill them.",
          font=NOTE)
     if kind == "hybrid":
         _put(ws, f"A{r + 2}", "Limits: overtime only once regular capacity is full and at most "
@@ -328,7 +335,9 @@ def _summary_sheet(wb, scn: Scenario):
     r = int(L.LOWER_COST_CELL[1:])
     _put(ws, f"A{r}", "Lower-cost plan: Chase or Level?", font=BOLD, border=True)
     _input(ws, L.LOWER_COST_CELL)
-    _put(ws, f"E{r}", "let Excel decide with a formula", font=NOTE)
+    tc = L.summary_row("Total Cost")
+    _put(ws, f"E{r}", f'a formula comparing B{tc} and C{tc}: =IF(test, "Chase", "Level")',
+         font=NOTE)
     r = int(L.SAVINGS_CELL[1:])
     _put(ws, f"A{r}", "Savings of the lower-cost plan ($)", font=BOLD, border=True)
     _input(ws, L.SAVINGS_CELL, "$#,##0.00")
@@ -378,6 +387,14 @@ def _help_sheet(wb):
         _put(ws, f"A{r}", fn, font=BOLD)
         _put(ws, f"B{r}", ex, font=CODE)
         _put(ws, f"C{r}", d, wrap=True)
+    r += 2
+    _put(ws, f"A{r}", "Patterns: turning a question into a formula", font=H2)
+    for t, shape, d in text.EXCEL_PATTERNS:
+        r += 1
+        _put(ws, f"A{r}", t, font=BOLD, wrap=True)
+        _put(ws, f"B{r}", shape, font=CODE, wrap=True)
+        _put(ws, f"C{r}", d, wrap=True)
+        ws.row_dimensions[r].height = 48
     r += 2
     _put(ws, f"A{r}", "What an error means", font=H2)
     for e, d in text.EXCEL_ERRORS:
@@ -606,6 +623,7 @@ def add_hybrid_start(data: bytes, scn: Scenario, decision: Decision) -> bytes:
     for pc in L.PLANNING["hybrid"]:
         ws[L.planning_ref("hybrid", pc.key)].value = None
     _fill_plan(ws, scn, "hybrid", default_columns("hybrid"), decision)
+    _hybrid_helpers(ws, scn, decision, L.FIRST_STUDENT_COL + len(default_columns("hybrid")) + 1)
     for j, _ in enumerate(default_columns("hybrid")):          # decisions: green cells
         concept = default_columns("hybrid")[j][0]
         if concept in L.DECISIONS:
@@ -615,6 +633,29 @@ def add_hybrid_start(data: bytes, scn: Scenario, decision: Decision) -> bytes:
     bio = io.BytesIO()
     wb.save(bio)
     return bio.getvalue()
+
+
+def _hybrid_helpers(ws, scn: Scenario, decision: Decision, first: int) -> None:
+    """Grey helper columns after a gap: the starting plan's workers and regular production as
+    FIXED numbers, and (whole workers) the leftover if one worker fewer. They never change when
+    the student edits the green decisions, so formulas can use them without a circular
+    reference. The checker reads them as helper columns (not graded)."""
+    cap = "$C$" + L.planning_ref("hybrid", "capacity")[1:]
+    cols = [("Helper: starting workers", lambda i: decision.workers[i]),
+            ("Helper: starting regular production", lambda i: decision.regular[i])]
+    if scn.whole_workers:
+        w, p = get_column_letter(first), get_column_letter(first + 1)
+        cols.append(("Helper: leftover with one worker fewer",
+                     lambda i: f"=MAX(0,{p}{L.month_row(i)}-({w}{L.month_row(i)}-1)*{cap})"))
+    for k, (head, val) in enumerate(cols):
+        letter = get_column_letter(first + k)
+        c = ws[f"{letter}1"]
+        c.value, c.fill = head, HELPER_FILL
+        for i in range(L.N_MONTHS):
+            cell = ws[f"{letter}{L.month_row(i)}"]
+            cell.value, cell.fill = val(i), HELPER_FILL
+        ws[f"{letter}{L.TOTAL_ROW}"].fill = HELPER_FILL
+        ws.column_dimensions[letter].width = 15
 
 
 def file_name(student_name: str, student_id: str, solution: bool = False) -> str:

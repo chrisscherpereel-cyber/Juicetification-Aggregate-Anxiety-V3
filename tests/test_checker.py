@@ -78,10 +78,13 @@ def test_unclear_heading_is_guessed_from_values(key_book):
     assert res.complete
 
 
-def test_duplicate_columns_block_completion(key_book):
+def test_duplicate_column_is_noted_and_checked_as_a_helper(key_book):
+    # a second "Workers"-like column (e.g. "original workers") must not block submitting:
+    # the first one is checked, the extra one is shown as a helper
     b = book_from(key_book, {(L.SHEET_CHASE, "Q1"): Cell("Closing inventory", None)})
     res = checker.check_book(b, scn7(), "chase", SID)
-    assert any(n.kind == "duplicate" for n in res.notes) and not res.complete
+    assert any(n.kind == "duplicate" for n in res.notes) and res.complete
+    assert {c.status for c in res.cells if c.ref.startswith("Q")} <= {"helper"}
 
 
 def test_blank_workbook_counts_as_todo_not_mistakes():

@@ -3,7 +3,7 @@
 # Every parameter has a default, so an app opened with no config behaves as the
 # standalone practice version.
 APP_KEY = "app"; NAME = "Aggregate Anxiety"; SCHEMA_VERSION = 1
-MODEL_VERSION = "5.1.0"   # bump when the calculation model or the workbook layout changes
+MODEL_VERSION = "5.2.0"   # bump when the calculation model or the workbook layout changes
 
 _PRESETS = ["standard", "strong_seasonal", "stability_favored", "limited_flex", "tight_storage"]
 
