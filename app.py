@@ -29,7 +29,7 @@ import student_store as store
 from juice_director import resolve_config, serve_manifest_if_requested
 from manifest import MANIFEST
 
-from aggplan import checker, engine, guide, hints, layout as L, saving, text, workbook
+from aggplan import checker, engine, guide, hints, layout as L, persistence, saving, text, workbook
 from aggplan import identity as ident
 from aggplan.recognize import HELPER
 from aggplan.scenario import MONTHS as L_MONTHS, resolve_scenario
@@ -162,6 +162,7 @@ def unlocked(key: str) -> bool:
 
 def go(step: str) -> None:
     SS["step"] = step
+    save_state("nav")                      # the step you're on is part of your saved work
 
 
 def _report():
@@ -170,44 +171,105 @@ def _report():
     return report
 
 
-# ---- saving (optional Dropbox store; lets a student resume and feeds the roster) ----
+# ---- saving and restoring --------------------------------------------------------------
+# Saved work = persistence.snapshot(): everything needed to continue on any computer,
+# including the latest uploaded workbook. It goes to the server store when one is configured
+# (in the background), and can always be downloaded as a progress file.
+#
+# Nothing is ever saved for a student until their saved work has been looked for and loaded:
+# otherwise a fresh, empty session on a second computer could overwrite it. If saved work
+# exists but can't be used (network error, or the assignment's settings changed), saving
+# stays paused until the student chooses what to do.
+SS.setdefault("last_wb", None)             # latest uploaded workbook (persistence entry)
+SS.setdefault("restore", None)             # {"sid", "status", "msg", "saved"}
+
+
+def server_saving() -> bool:
+    return bool(identity.recorded and store.enabled())
+
+
+def current_snapshot() -> dict:
+    stu = SS["student"]
+    scn = scenario()
+    return persistence.snapshot(
+        sid=stu["sid"], name=stu["name"], seed=scn.seed, config_hash=scn.config_hash,
+        pieces=SS["pieces"], policy=SS["policy"], hybrid_mode=SS["hybrid_mode"],
+        step=SS["step"], last_wb=SS.get("last_wb"), downloaded_hash=SS.get("downloaded_hash"))
+
+
 def save_state(step: str) -> None:
     stu = SS.get("student")
-    if not (identity.recorded and store.enabled() and stu):
+    if not (stu and server_saving()):
         return
-    scn = scenario()
+    r = SS.get("restore") or {}
+    if r.get("sid") != stu["sid"] or r.get("status") not in ("loaded", "none", "fresh"):
+        return                              # saved work not loaded yet: never overwrite it
     done = sum(submitted(k) for k in PIECES)
-    state = {"name": stu["name"], "seed": scn.seed, "config_hash": scn.config_hash,
-             "pieces": SS["pieces"], "policy": SS["policy"], "hybrid_mode": SS["hybrid_mode"]}
     # uploaded in the background so the student's screen never waits on the network
-    saving.save_later(f"{GAME}|{stu['sid']}", store.save, state, GAME, stu["sid"],
+    saving.save_later(f"{GAME}|{stu['sid']}", store.save, current_snapshot(), GAME, stu["sid"],
                       progress=done / len(PIECES), step=step)
 
 
-def restore_state() -> None:
-    if SS.get("_restored") or not (identity.recorded and store.enabled() and URL_SID):
-        return
-    SS["_restored"] = True
-    try:
-        saved = store.load(GAME, URL_SID) or {}
-    except Exception:                                                  # noqa: BLE001
-        return
+def apply_saved(saved: dict, sid: str, source: str) -> str:
+    """Load saved work into this session. Returns "loaded" or "incompatible"."""
+    policy = dict(SS["policy"])
     if STUDENT_SETS_POLICIES and isinstance(saved.get("policy"), dict):
-        SS["policy"].update({k: v for k, v in saved["policy"].items() if k in POLICY_KEYS})
-    mode_changed = False
-    if saved.get("hybrid_mode") in ("guided", "build", "off"):
-        mode_changed = saved["hybrid_mode"] != SS["hybrid_mode"]
-        SS["hybrid_mode"] = saved["hybrid_mode"]
-    scn = resolve_scenario(policy_cfg(), seed_for(URL_SID))
-    if saved.get("config_hash") == scn.config_hash and isinstance(saved.get("pieces"), dict):
-        SS["student"] = {"name": saved.get("name") or URL_SID, "sid": URL_SID}
+        policy.update({k: v for k, v in saved["policy"].items() if k in POLICY_KEYS})
+    mode = saved.get("hybrid_mode") if saved.get("hybrid_mode") in ("guided", "build", "off") \
+        else SS["hybrid_mode"]
+    cfg = {**CFG, **policy} if STUDENT_SETS_POLICIES else dict(CFG)
+    cfg["include_hybrid"] = INCLUDE_HYBRID and mode != "off"
+    scn = resolve_scenario(cfg, seed_for(sid))
+    if saved.get("config_hash") != scn.config_hash or not isinstance(saved.get("pieces"), dict):
+        return "incompatible"
+    SS["policy"], SS["hybrid_mode"] = policy, mode
+    name = saved.get("name") or (SS["student"] or {}).get("name") or sid
+    SS["student"] = {"name": name, "sid": sid}
+    for k in ALL_PIECES:
+        SS["pieces"][k] = {**new_piece(), **(saved["pieces"].get(k) or {})}
+    if saved.get("step"):
+        SS["step"] = saved["step"]
+    SS["last_wb"] = saved.get("last_wb")
+    if saved.get("downloaded_hash"):
+        SS["downloaded_hash"] = saved["downloaded_hash"]
+    # bring back the last feedback by re-checking the latest workbook
+    SS["results"] = {}
+    data = persistence.workbook_bytes(SS["last_wb"])
+    if data:
         for k in ALL_PIECES:
-            SS["pieces"][k] = {**new_piece(), **saved["pieces"].get(k, {})}
-    if mode_changed:
-        st.rerun()                     # the list of steps depends on the hybrid switch
+            ps = SS["pieces"][k]
+            if ps["attempts"] and not ps["submitted"]:
+                SS["results"][k] = checker.check_piece(data, scn, k, expected_sid=sid)
+    SS["restore"] = {"sid": sid, "status": "loaded", "source": source}
+    return "loaded"
 
 
-restore_state()
+def restore_state(sid: str) -> None:
+    """Look for this student's saved work once per session (per student)."""
+    r = SS.get("restore") or {}
+    if r.get("sid") == sid:
+        return
+    if not server_saving():
+        SS["restore"] = {"sid": sid, "status": "none"}
+        return
+    try:
+        saved = store.load(GAME, sid) or {}
+    except Exception as e:                                            # noqa: BLE001
+        SS["restore"] = {"sid": sid, "status": "error", "msg": type(e).__name__}
+        return
+    if not saved:
+        SS["restore"] = {"sid": sid, "status": "none"}
+        return
+    before = (SS["hybrid_mode"], SS["step"])
+    if apply_saved(saved, sid, "server") == "incompatible":
+        SS["restore"] = {"sid": sid, "status": "incompatible", "saved": saved}
+        return
+    if before != (SS["hybrid_mode"], SS["step"]):
+        st.rerun()                          # the steps (and sidebar) depend on what was loaded
+
+
+if URL_SID:
+    restore_state(URL_SID)
 
 
 # --------------------------------------------------------------------------- #
@@ -263,6 +325,45 @@ def sidebar_settings() -> None:
                        if submitted("summary") else "Locked: the hybrid plan is submitted.")
 
 
+def your_work() -> None:
+    """Sidebar: is my work safe, and how do I take it to another computer?"""
+    stu = SS["student"]
+    st.markdown("**Your work**")
+    r = SS.get("restore") or {}
+    if server_saving():
+        stt = saving.status(f"{GAME}|{stu['sid']}")
+        if r.get("status") in ("error", "incompatible"):
+            st.caption("⚠ Saving is paused — see the message on step 1.")
+        elif stt["state"] == "saving":
+            st.caption("⟳ Saving…")
+        elif stt["state"] == "failed":
+            st.caption(f"⚠ Last save failed ({stt.get('error')}). It retries on your next "
+                       "action; download a progress file to be safe.")
+        elif stt["state"] == "saved":
+            st.caption("✓ Saved to the server at "
+                       + dt.datetime.fromtimestamp(stt["at"]).strftime("%H:%M:%S")
+                       + ". Sign in with the same ID on any computer to continue.")
+        else:
+            st.caption("✓ Saved to the server as you work. Sign in with the same ID on any "
+                       "computer to continue.")
+    else:
+        st.caption("⚠ Server saving is off for this app. Before you close this tab or switch "
+                   "computers, download your progress file (and your workbook).")
+    wb = persistence.workbook_bytes(SS.get("last_wb"))
+    if wb:
+        st.download_button("⬇ My latest workbook", wb, file_name=SS["last_wb"]["name"],
+                           mime="application/vnd.openxmlformats-officedocument."
+                                "spreadsheetml.sheet", width="stretch", key="dl_last_wb",
+                           help="The last workbook you uploaded — continue in it on any "
+                                "computer.")
+    st.download_button("⬇ Progress file", persistence.encode_file(current_snapshot(),
+                                                                  ident.signing_key()),
+                       file_name=f"Aggregate_Anxiety_progress_{stu['sid']}.json",
+                       mime="application/json", width="stretch", key="dl_progress",
+                       help="Everything you've done, including your latest workbook. Upload it "
+                            "on step 1 of any computer to continue.")
+
+
 with st.sidebar:
     st.markdown("## 🧃 Aggregate Anxiety")
     st.caption("Aggregate planning, built by you in Excel")
@@ -286,6 +387,9 @@ with st.sidebar:
         st.markdown("---")
         st.caption(f"{done} of {len(PIECES)} pieces submitted")
         st.progress(done / len(PIECES))
+    if stu:
+        st.markdown("---")
+        your_work()
     st.markdown("---")
     sidebar_settings()
     st.markdown("---")
@@ -363,8 +467,57 @@ def show_policies(scn, expanded: bool = False) -> None:
                 st.markdown("\n".join(f"- {text.md(d)}" for d in details))
 
 
+def restore_panel() -> None:
+    """Saved work that couldn't be used, and continuing from a progress file."""
+    r = SS.get("restore") or {}
+    if r.get("status") == "error":
+        st.error(f"**Your saved work couldn't be loaded** ({r.get('msg')}). Saving is paused "
+                 "so nothing is overwritten. Try again in a moment.")
+        if st.button("Try loading again", type="primary"):
+            SS["restore"] = None
+            restore_state(SS["student"]["sid"] if SS["student"] else URL_SID)
+            st.rerun()
+    elif r.get("status") == "incompatible":
+        saved = r.get("saved") or {}
+        st.warning("**You have saved work, but it was made for a different setup** — your "
+                   "instructor changed the assignment, or you chose different policies. It "
+                   "hasn't been loaded, and saving is paused so it isn't overwritten.")
+        wb = persistence.workbook_bytes(saved.get("last_wb"))
+        c1, c2 = st.columns(2)
+        if wb:
+            c1.download_button("⬇ Download my saved workbook", wb,
+                               file_name=saved["last_wb"]["name"], width="stretch")
+        if c2.button("Start fresh (replaces the saved work)", width="stretch"):
+            SS["restore"] = {"sid": r["sid"], "status": "fresh"}
+            save_state("fresh")
+            st.rerun()
+    with st.expander("Continue from a progress file", expanded=not server_saving() and not SS["student"]):
+        st.caption("Downloaded from the sidebar (**Your work ▸ Progress file**) on another "
+                   "computer. It brings back everything, including your latest workbook.")
+        up = st.file_uploader("Progress file (.json)", type=["json"], key="progress_up")
+        if up is not None:
+            state, err = persistence.decode_file(up.getvalue(), ident.signing_key())
+            sid = (state or {}).get("sid")
+            if err:
+                st.error(err)
+            elif (URL_SID and sid != URL_SID) or (SS["student"] and sid != SS["student"]["sid"]):
+                st.error(f"This progress file belongs to student ID '{sid}', not yours.")
+            elif SS.get("_progress_loaded") != up.file_id:
+                SS["_progress_loaded"] = up.file_id
+                if apply_saved(state, sid, "file") == "incompatible":
+                    st.error("This progress file was made for a different setup of the "
+                             "assignment, so it can't be loaded here.")
+                else:
+                    if not URL_SID and not PRACTICE:
+                        store.set_student_id(sid)
+                    save_state("restored")
+                    st.success("Your work is back.")
+                    st.rerun()
+
+
 def page_start() -> None:
     header("start")
+    restore_panel()
     if not SS["student"]:
         st.write("You are the operations planner at **Juicetification Inc.**, a juice bottler "
                  "with a strong summer peak. You'll plan a year of production in Excel — "
@@ -381,7 +534,8 @@ def page_start() -> None:
                     SS["student"] = {"name": name.strip(), "sid": sid}
                     if not URL_SID and not PRACTICE:
                         store.set_student_id(sid)   # survives a refresh; enables recording
-                    save_state("start")
+                    else:
+                        restore_state(sid)          # load saved work before anything is saved
                     st.rerun()
         return
 
@@ -523,6 +677,8 @@ def run_check(key: str, up) -> None:
         return
     res = checker.check_piece(data, scenario(), key, expected_sid=SS["student"]["sid"])
     SS["results"][key] = res
+    if not res.fatal:
+        SS["last_wb"] = persistence.workbook_entry(up.name, data) or SS.get("last_wb")
     if ps["attempts"] and ps["attempts"][-1]["sha"] == sha:
         return                                   # same file again: not a new attempt
     ps["attempts"].append({"at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "sha": sha,

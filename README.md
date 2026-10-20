@@ -243,6 +243,32 @@ levels after every upload — so a student can close the browser and resume — 
 completion record (report ID, per-piece uploads and help, workbook SHA-256s, plan costs) with the
 final report. Without a store everything works within a browser session.
 
+## No work is lost
+
+**Between screens:** everything stays in the session — uploads and their feedback, hint
+levels, guided answers, settings and the step you're on.
+
+**On another computer:** a student's saved work is everything needed to continue anywhere
+([aggplan/persistence.py](aggplan/persistence.py)): name, policies, hybrid mode, every piece
+(uploads, hint levels, guided answers, submissions), the step they were on, and **their
+latest uploaded workbook**. Signing in with the same student ID brings it all back — the
+feedback grids are rebuilt by re-checking that workbook — and the sidebar's
+**⬇ My latest workbook** lets them carry on in Excel on the new computer.
+
+* **With the server store configured** (`DB_ENCRYPTION_KEY` + Dropbox credentials): saved
+  automatically after every upload, answer, setting change and step change, in the
+  background, encrypted. The sidebar shows *Saving… / Saved at hh:mm / last save failed*.
+* **Without it:** the sidebar says so plainly and offers **⬇ Progress file** (a JSON file with
+  everything, including the workbook). Uploading it on step 1 of any computer restores the
+  work. The file carries a checksum — and an HMAC signature when `ASSIGNMENT_SIGNING_KEY` is
+  set — so a damaged or edited file, or another student's, is refused.
+
+Safeguards: nothing is saved for a student until their saved work has been looked for and
+loaded, so a fresh session on a second computer can't overwrite it. If saved work can't be
+loaded (a network error) or was made for a different setup (the instructor changed the
+assignment), saving pauses and the student is told, with a download of their saved workbook
+and an explicit "Start fresh" choice. Saves for one student are sent in order, newest last.
+
 ## Running a class of 30+ on Streamlit Community Cloud
 
 Verified with a real Streamlit server and 30 simulated browsers (`tools/load_test.py`); full
@@ -297,6 +323,7 @@ aggplan/               no Streamlit import; unit-testable
   workbook.py          builds the student workbook (and the answer key)
   report.py            piece receipts and the final report (PDF)
   saving.py            background, per-student-ordered progress saves
+  persistence.py       saved-work snapshot and the progress file
   identity.py          signed assignment links (from V2)
 student_store.py, juice_director.py   shared Director modules (unchanged)
 tools/                 make_answer_key.py, make_assignment_links.py, recalc_in_excel.ps1,
@@ -306,9 +333,9 @@ tests/                 pytest suite + Excel-calculated fixtures
 
 ## Known limitations
 
-* Without the Dropbox store, attempt counts and submitted pieces live in the browser session; a
-  refresh keeps the student ID but clears them (the work itself is safe in the workbook, and a
-  correct piece re-submits on its first upload).
+* Without the Dropbox store, work moves between computers only through the progress file the
+  student downloads; a closed tab without one starts over (the workbook itself is safe on the
+  student's computer).
 * Heading recognition covers common wording; an unusual heading is matched by its numbers when
   they are right, otherwise the student is asked for a clearer heading.
 * Two errors that cancel out can pass a cell; the checker sees values, and only "formula or typed".

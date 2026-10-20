@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, Tuple
 
 _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="aa-save")
 _PENDING: Dict[str, Tuple[Callable, tuple, dict]] = {}
 _RUNNING: set = set()            # students whose save is in flight — one at a time each
+_STATUS: Dict[str, dict] = {}    # last result per student, for the sidebar
 _LOCK = threading.Lock()
 
 
@@ -40,8 +42,11 @@ def _flush(key: str) -> None:
         fn, args, kwargs = job
         try:
             fn(*args, **kwargs)
-        except Exception:                                # noqa: BLE001 — saving is best effort
-            pass
+            ok, msg = True, ""
+        except Exception as e:                           # noqa: BLE001 — reported, not raised
+            ok, msg = False, type(e).__name__
+        with _LOCK:
+            _STATUS[key] = {"ok": ok, "error": msg, "at": time.time()}
 
 
 def save_later(key: str, fn: Callable, state: dict, *args, **kwargs) -> None:
@@ -58,3 +63,15 @@ def save_later(key: str, fn: Callable, state: dict, *args, **kwargs) -> None:
 def pending() -> int:
     with _LOCK:
         return len(_PENDING) + len(_RUNNING)
+
+
+def status(key: str) -> dict:
+    """{"state": "saving" | "saved" | "failed" | "idle", "at": epoch seconds, "error": str}"""
+    with _LOCK:
+        busy = key in _PENDING or key in _RUNNING
+        last = dict(_STATUS.get(key, {}))
+    if busy:
+        return {"state": "saving", **last}
+    if not last:
+        return {"state": "idle"}
+    return {"state": "saved" if last["ok"] else "failed", **last}
