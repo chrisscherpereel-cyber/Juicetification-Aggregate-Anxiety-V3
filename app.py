@@ -123,10 +123,17 @@ def new_piece() -> dict:
 SS.setdefault("pieces", {k: new_piece() for k in ALL_PIECES})
 
 
-def seed_for(sid: str) -> int:
+SS.setdefault("restarts", 0)          # times the student started over with a new scenario
+SS.setdefault("restart_log", [])
+
+
+def seed_for(sid: str, restarts: int = None) -> int:
+    """The student's scenario. Starting over gives a new one (a new seed from the student ID
+    and the restart count) — unless the instructor fixed the scenario for the game."""
     if CTX.get("seed") is not None:
         return int(CTX["seed"])
-    return store.derive_seed(GAME, sid, lo=1, hi=10 ** 6)
+    n = SS.get("restarts", 0) if restarts is None else restarts
+    return store.derive_seed(GAME, sid if not n else f"{sid}#restart{n}", lo=1, hi=10 ** 6)
 
 
 POLICY_KEYS = ("safety_stock_policy", "worker_policy")
@@ -212,7 +219,8 @@ def current_snapshot() -> dict:
     return persistence.snapshot(
         sid=stu["sid"], name=stu["name"], seed=scn.seed, config_hash=scn.config_hash,
         pieces=SS["pieces"], policy=SS["policy"], hybrid_mode=SS["hybrid_mode"],
-        step=SS["step"], last_wb=SS.get("last_wb"), downloaded_hash=SS.get("downloaded_hash"))
+        step=SS["step"], last_wb=SS.get("last_wb"), downloaded_hash=SS.get("downloaded_hash"),
+        restarts=SS.get("restarts", 0), restart_log=SS.get("restart_log", []))
 
 
 def save_state(step: str) -> None:
@@ -237,9 +245,11 @@ def apply_saved(saved: dict, sid: str, source: str) -> str:
         else SS["hybrid_mode"]
     cfg = {**CFG, **policy} if STUDENT_SETS_POLICIES else dict(CFG)
     cfg["include_hybrid"] = INCLUDE_HYBRID and mode != "off"
-    scn = resolve_scenario(cfg, seed_for(sid))
+    restarts = int(saved.get("restarts") or 0)
+    scn = resolve_scenario(cfg, seed_for(sid, restarts))
     if saved.get("config_hash") != scn.config_hash or not isinstance(saved.get("pieces"), dict):
         return "incompatible"
+    SS["restarts"], SS["restart_log"] = restarts, list(saved.get("restart_log") or [])
     SS["policy"], SS["hybrid_mode"] = policy, mode
     name = saved.get("name") or (SS["student"] or {}).get("name") or sid
     SS["student"] = {"name": name, "sid": sid}
@@ -343,6 +353,54 @@ def sidebar_settings() -> None:
                        if submitted("summary") else "Locked: the hybrid plan is submitted.")
 
 
+def start_over() -> None:
+    """Erase the student's work in the app and give them a new scenario."""
+    stu, scn = SS["student"], scenario()
+    SS["restart_log"] = SS.get("restart_log", []) + [{
+        "at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "seed": scn.seed,
+        "submitted": [k for k in PIECES if submitted(k)]}]
+    SS["restarts"] = SS.get("restarts", 0) + 1
+    SS["pieces"] = {k: new_piece() for k in ALL_PIECES}
+    SS["results"] = {}
+    SS["policy"] = {"safety_stock_policy": CFG.get("safety_stock_policy") or "none",
+                    "worker_policy": CFG.get("worker_policy") or "whole"}
+    SS["hybrid_mode"] = CFG.get("hybrid_mode") or "guided"
+    for k in ("last_wb", "downloaded_hash", "wb_for", "wb_bytes", "wb_head_for",
+              "wb_head_bytes", "receipts", "hyb_seed_out", "final_pdf", "confirm_restart"):
+        SS.pop(k, None)
+    for k in [k for k in SS if str(k).startswith(("headres_", "headcheck_", "up_"))]:
+        del SS[k]
+    SS["step"] = "start"
+    SS["student"] = stu
+    save_state("restart")
+
+
+def start_over_box() -> None:
+    """Sidebar: start over with a new scenario — only after a clear warning."""
+    if not SS.get("confirm_restart"):
+        if st.button("↺ Start over with a new scenario", width="stretch", key="restart_ask"):
+            SS["confirm_restart"] = True
+            st.rerun()
+        return
+    fixed = CTX.get("seed") is not None
+    st.warning(
+        "**Start over?** This erases everything you've done in the app — every upload, "
+        "hint, found column, submitted piece and receipt — and can't be undone. "
+        + ("Your instructor set the scenario for this class, so your numbers stay the same."
+           if fixed else
+           "You get a **new scenario** with new demand, so your current workbook won't be "
+           "accepted any more: you'll design the columns again and download a new one.")
+        + " Your report will show that you started over. Want a copy first? Download your "
+          "progress file above.")
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, start over", type="primary", width="stretch", key="restart_yes"):
+        start_over()
+        st.rerun()
+    if c2.button("Cancel", width="stretch", key="restart_no"):
+        SS["confirm_restart"] = False
+        st.rerun()
+
+
 def your_work() -> None:
     """Sidebar: is my work safe, and how do I take it to another computer?"""
     stu = SS["student"]
@@ -380,6 +438,7 @@ def your_work() -> None:
                        mime="application/json", width="stretch", key="dl_progress",
                        help="Everything you've done, including your latest workbook. Upload it "
                             "on step 1 of any computer to continue.")
+    start_over_box()
 
 
 with st.sidebar:
@@ -1091,11 +1150,14 @@ def design_columns(key: str, scn) -> None:
     checked = ps.setdefault("found", {})              # found with the heading check (saved)
     res = SS["results"].get(key)
     found = found_columns(key)                        # ... plus uploads (level: + chase)
-    st.info(text.md(columns.whats_new(key)))
-    st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet only Month and Demand are given. Each "
-             "question below becomes one column: a heading in row 1 (from column C on), "
-             "formulas for January–December, totals in row 14. **Check your headings one at a "
+    st.write("Turn each question below into a column heading and **check it here, one at a "
              "time** — a good one is ticked off and tells you why that column matters.")
+    with st.expander("About this step"):
+        st.info(text.md(columns.whats_new(key)))
+        st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet only Month and Demand are given. "
+                 "Each question becomes one column: a heading in row 1 (from column C on), "
+                 "formulas for January–December, totals in row 14. Any order and any clear "
+                 "wording work.")
     progress = st.empty()                    # filled in after this run's check (below)
 
     st.markdown(f"<div id='aa-headcheck-{key}'></div>", unsafe_allow_html=True)
@@ -1169,16 +1231,19 @@ def design_columns(key: str, scn) -> None:
     if found:
         info = {c.concept: c for _, _, cols in columns.stages(key, scn.whole_workers)
                 for c in cols}
-        st.markdown("**Found so far** — newest first")
-        for concept in reversed(list(found)):          # found in the order they were found
-            c = info[concept]
-            st.markdown(text.md(f"✔ **{c.heading}** — your heading “{escape(found[concept])}”"))
-            st.caption(text.md(c.why))
+        with st.expander(f"Found so far ({len(found)}) — newest first"):
+            for concept in reversed(list(found)):      # found in the order they were found
+                c = info[concept]
+                st.markdown(text.md(f"✔ **{c.heading}** — your heading "
+                                    f"“{escape(found[concept])}”"))
+                st.caption(text.md(c.why))
     if key == "chase" and done < len(need) and not SS.get("downloaded_hash"):
-        st.caption("Your workbook comes once every column is found, with your headings already "
-                   "in it. Already know the columns, or need the file now?")
-        download_workbook(scn, "chase_skip", label="Download the workbook anyway (no headings)",
-                          primary=False, skipped=True)
+        with st.expander("Need the workbook now?"):
+            st.caption("Your workbook comes once every column is found, with your headings "
+                       "already in it. Already know the columns, or need the file now?")
+            download_workbook(scn, "chase_skip",
+                              label="Download the workbook anyway (no headings)",
+                              primary=False, skipped=True)
 
 
 def show_guidance(key: str, scn) -> None:
@@ -1305,7 +1370,7 @@ def _receipt(key: str, scn, sub: dict):
         comparison=sub.get("metrics") or None, feasibility=sub.get("feasibility") or None,
         recommendation=sub.get("recommendation", ""),
         justification=sub.get("justification") if key == "summary" else None,
-        words=sub.get("words", 0))
+        words=sub.get("words", 0), restarts=SS.get("restarts", 0))
 
 
 def page_piece(key: str) -> None:
@@ -1456,7 +1521,7 @@ def page_report() -> None:
             comparison=summ.get("metrics") or None, feasibility=hyb.get("feasibility") or None,
             recommendation=summ.get("recommendation", ""),
             justification=summ.get("justification") if summ else None,
-            words=summ.get("words", 0))
+            words=summ.get("words", 0), restarts=SS.get("restarts", 0))
         SS["final_pdf"] = {"pdf": pdf, "rid": rid, "final": final}
         if final and identity.recorded and store.enabled():
             try:

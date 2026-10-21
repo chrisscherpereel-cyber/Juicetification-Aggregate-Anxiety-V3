@@ -42,11 +42,13 @@ def workbook_bytes(entry: Optional[dict]) -> Optional[bytes]:
 
 def snapshot(*, sid: str, name: str, seed: int, config_hash: str, pieces: dict, policy: dict,
              hybrid_mode: str, step: str, last_wb: Optional[dict],
-             downloaded_hash: Optional[str]) -> Dict[str, Any]:
+             downloaded_hash: Optional[str], restarts: int = 0,
+             restart_log: Optional[list] = None) -> Dict[str, Any]:
     return {"schema": SCHEMA, "sid": sid, "name": name, "seed": seed,
             "config_hash": config_hash, "pieces": pieces, "policy": policy,
             "hybrid_mode": hybrid_mode, "step": step, "last_wb": last_wb,
-            "downloaded_hash": downloaded_hash}
+            "downloaded_hash": downloaded_hash, "restarts": restarts,
+            "restart_log": restart_log or []}
 
 
 def _canonical(state: dict) -> bytes:

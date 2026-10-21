@@ -74,7 +74,8 @@ def build_report(scn: Scenario, *, student_name: str, student_id: str, identity_
                  pieces: List[dict], final: bool, heading: str,
                  comparison: Optional[Dict[str, Dict[str, float]]] = None,
                  feasibility: Optional[List[dict]] = None, recommendation: str = "",
-                 justification: Optional[str] = None, words: int = 0) -> Tuple[bytes, str]:
+                 justification: Optional[str] = None, words: int = 0,
+                 restarts: int = 0) -> Tuple[bytes, str]:
     """(pdf bytes, report id). `pieces`: dicts with title, status, attempts, first,
     submitted_at, help, file, sha."""
     cmap = _register_fonts()
@@ -115,7 +116,8 @@ def build_report(scn: Scenario, *, student_name: str, student_id: str, identity_
     info = [["Student", student_name or "—"], ["Student ID", student_id or "—"],
             ["Identity", identity_label], ["Created", now.strftime("%Y-%m-%d %H:%M %Z").strip()],
             ["Report ID", rid],
-            ["Scenario", f"#{scn.seed}  ·  config {scn.config_hash}  ·  model {MODEL_VERSION}"]]
+            ["Scenario", f"#{scn.seed}  ·  config {scn.config_hash}  ·  model {MODEL_VERSION}"
+                         + (f"  ·  started over {restarts}×" if restarts else "")]]
     story.append(table(info, [1.4 * inch, 5.6 * inch], head=False))
 
     story.append(P("Pieces", h2))

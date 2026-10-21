@@ -55,8 +55,9 @@ Nothing about a column is given away before the student finds it:
     checker understands.
   Found columns and misses are saved with the student's work; columns already read from an
   upload count as found.
-  The panel reads top down, newest first: the latest check, *How they connect*, *Still to
-  find*, then the earlier finds (most recent first) at the bottom. After each check the page scrolls
+  The panel shows only what's needed now — progress, the heading box, the latest reply and
+  *Still to find*; *About this step*, *How they connect*, *Found so far* (newest first) and
+  *Need the workbook now?* are closed sections. After each check the page scrolls
   so the heading box and its reply are in view.
 * **Column order**, once every column is found — judged on the workbook's own order once it
   has been uploaded with every column, otherwise on the order the headings were checked. If a
@@ -322,6 +323,19 @@ student's workbook filled with headings and reference formulas (open it in Excel
 levels after every upload — so a student can close the browser and resume — and writes a
 completion record (report ID, per-piece uploads and help, workbook SHA-256s, plan costs) with the
 final report. Without a store everything works within a browser session.
+
+## Starting over
+
+The sidebar's **Your work** section has **↺ Start over with a new scenario**. It asks first, with
+a warning that it erases everything done in the app (uploads, hints, found columns, submitted
+pieces, receipts), can't be undone, and that the current workbook won't be accepted any more
+(a new scenario means new demand); it suggests downloading the progress file first. On **Yes**
+the student keeps their name and ID, policies and the hybrid mode go back to the defaults, and
+the scenario becomes a new one (seed from the student ID and the restart count). If the
+instructor fixed the scenario for the game (`?seed=` / a Director fixed seed), the numbers stay
+the same and the warning says so. The restart count and a log (when, which scenario, which
+pieces had been submitted) are saved with the student's work, so another computer gets the same
+new scenario; the report shows "started over N×".
 
 ## No work is lost
 

@@ -189,3 +189,26 @@ def test_workbook_entry_round_trip_and_size_limit():
     e["b64"] = e["b64"][:-8] + "AAAAAAAA"
     assert persistence.workbook_bytes(e) is None                 # damaged -> refused
     assert persistence.workbook_entry("big.xlsx", b"x" * (persistence.MAX_WORKBOOK_BYTES + 1)) is None
+
+
+def test_starting_over_carries_the_new_scenario_to_another_computer(server):
+    def fresh(sid):
+        at = st_testing.AppTest.from_file(APP, default_timeout=60)   # no fixed seed
+        at.query_params["sid"] = sid
+        return at.run()
+
+    a = fresh("S9")
+    a = sign_in(a, sid=None)
+    before = next(m.value for m in a.sidebar.markdown if "Scenario #" in m.value)
+    next(b for b in a.sidebar.button if b.label.startswith("↺ Start over")).click()
+    a = a.run()
+    next(b for b in a.sidebar.button if b.label == "Yes, start over").click()
+    a = a.run()
+    wait_for_saves()
+    after = next(m.value for m in a.sidebar.markdown if "Scenario #" in m.value)
+    assert after != before and server.data[(None, "S9")]["restarts"] == 1
+
+    b = fresh("S9")                                  # another computer, same student
+    assert b.session_state["restore"]["status"] == "loaded"
+    assert b.session_state["restarts"] == 1
+    assert next(m.value for m in b.sidebar.markdown if "Scenario #" in m.value) == after
