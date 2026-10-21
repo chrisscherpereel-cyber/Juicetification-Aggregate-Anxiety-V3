@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import layout as L
-from .recognize import HELPER, map_columns
+from .recognize import HELPER, REQ_PRODUCTION, classify
 from .hints import QUESTIONS
 
 DEMAND, PLANNING = "Demand", "Planning cells"
@@ -185,49 +185,78 @@ def stages(kind: str, whole_workers: bool = True) -> List[Tuple[str, str, List[C
 
 
 def whats_new(kind: str) -> str:
-    """How this plan's columns differ from the plan before (markdown)."""
+    """How this plan's columns differ from the plan before (markdown, without giving the new
+    columns away)."""
     n = len(L.REQUIRED[kind])
     if kind == "chase":
-        return (f"**Your first plan: {n} columns** (plus an optional Regular Capacity). Build "
-                "them once, carefully — the level plan uses exactly the same columns.")
+        return (f"**Your first plan: {n} questions, one column each.** Build them once, "
+                "carefully — the level plan needs the same columns.")
     if kind == "level":
-        return (f"**Same {n} columns as your chase plan.** Copy the chase sheet's headings "
-                "(row 1) and most of its formulas. What changes: **Production** and **Workers** "
-                "now come from your level planning cells instead of following demand — so "
-                "inventory builds up and backorders appear, and every formula that uses them "
-                "must include them.")
-    prev = len(L.REQUIRED["chase"])
+        return (f"**The same {n} columns as your chase plan** — copy your chase headings. What "
+                "changes: **Production** and **Workers** now come from your level planning "
+                "cells instead of following demand.")
     new = [c for c in L.REQUIRED["hybrid"] if c not in L.REQUIRED["chase"]]
-    return (f"**Your earlier {prev} columns plus {len(new)} new ones:** "
-            + ", ".join(new) + ". **Workers, Regular Production, Overtime and Subcontract "
-            "Production are now your decisions** — you type them. Ending Inventory and Ending "
-            "Backorders now use **Total Production** (all three sources), not just regular "
-            "production.")
+    return (f"**Your chase columns plus {len(new)} new questions** (marked *new* below). Four "
+            "columns become decisions you type instead of calculating.")
 
 
-def check_headings(kind: str, headings: Sequence[str]) -> dict:
-    """How the checker would read these headings (typed in the app, one per line, in column
-    order from C). {"rows": [(letter, heading, read as)], "missing": [(concept, question)],
-    "duplicates": [(concept, letters)]}"""
-    from openpyxl.utils import get_column_letter
-    heads = {L.FIRST_STUDENT_COL + i: h.strip() for i, h in enumerate(headings) if h.strip()}
-    cm = map_columns(heads, kind)
-    rows = []
-    for j in sorted(heads):
-        letter = get_column_letter(j)
-        r = cm.read_as.get(letter)
-        if r == HELPER:
-            label = "helper column (fine — not checked)"
-        elif r:
-            label = heading_idea(kind, r)
-        elif any(letter in ls[1:] for ls in cm.duplicates.values()):
-            label = "duplicate — treated as a helper"
-        else:
-            label = "not recognised — say what it measures"
-        rows.append((letter, heads[j], label))
-    return {"rows": rows,
-            "missing": [(heading_idea(kind, c), QUESTIONS[c]) for c in cm.missing(kind)],
-            "duplicates": [(heading_idea(kind, c), ls) for c, ls in cm.duplicates.items()]}
+_END_WORDS = ("end", "ending", "closing", "close", "left", "remaining", "final", "eom")
+_SUPPORT = [
+    "That heading isn't recognised yet. Say in plain words what the column measures this "
+    "month.",
+    "Pick one of the open questions and turn its key words into a heading: name the thing "
+    "it counts or costs and, where it matters, *when* (the start or the end of the month).",
+    "Headings the checker understands usually name a thing — stock or inventory, orders "
+    "owed or backorders, workers or crew, hires, layoffs, bottles made or production, or a "
+    "… cost — plus a time word such as beginning/starting or ending/closing.",
+]
+
+
+def support(misses: int) -> str:
+    """Help after `misses` unrecognised headings (1, 2, 3+)."""
+    return _SUPPORT[min(max(misses, 1), len(_SUPPORT)) - 1]
+
+
+def check_one(kind: str, heading: str, found: Dict[str, str]) -> dict:
+    """Check ONE planned heading. `found`: {concept: the student's heading} found so far.
+    Returns {"status": ok | repeat | other_plan | helper | unknown | empty, "concept",
+    "name", "question", "why", "note"} — the column's name and why it matters only on ok."""
+    h = (heading or "").strip()
+    if not h:
+        return {"status": "empty"}
+    c = classify(h, kind)
+    if c == REQ_PRODUCTION or (kind != "hybrid" and c == "Total Production"):
+        c = "Regular Production"
+    if c == HELPER:
+        return {"status": "helper"}
+    if c is None:
+        return {"status": "unknown"}
+    if c not in concepts(kind):
+        plans = [k for k in ("chase", "level", "hybrid") if c in concepts(k)]
+        return {"status": "other_plan", "plans": plans}
+    out = {"concept": c, "name": heading_idea(kind, c), "question": QUESTIONS[c]}
+    if c in found:
+        return {**out, "status": "repeat", "yours": found[c]}
+    note = ""
+    words = h.lower()
+    if c in ("Ending Inventory", "Ending Backorders") and not any(w in words for w in _END_WORDS):
+        note = ("This reads as the **end** of the month. If you meant the start, say so "
+                "(e.g. “Beginning …”).")
+    return {**out, "status": "ok", "why": _WHY[c], "note": note,
+            "optional": is_optional(kind, c), "decision": is_decision(kind, c)}
+
+
+def open_questions(kind: str, found: Dict[str, str]) -> List[Tuple[str, List[Tuple[str, str]]]]:
+    """[(stage title, [(question, tag)])] still to find, in month order; tag is "new" (new in
+    the hybrid), "optional" or ""."""
+    new = set(concepts(kind)) - set(concepts("chase")) if kind == "hybrid" else set()
+    out = []
+    for title, _, cols in stages(kind):
+        qs = [(c.question, "new" if c.concept in new else "optional" if c.optional else "")
+              for c in cols if c.concept not in found]
+        if qs:
+            out.append((title, qs))
+    return out
 
 
 # ---- diagram ----------------------------------------------------------------------------------
@@ -239,10 +268,11 @@ def _q(s: str) -> str:
     return '"' + s.replace('"', "'") + '"'
 
 
-def diagram(kind: str) -> str:
+def diagram(kind: str, found: Optional[Dict[str, str]] = None) -> str:
     """Graphviz DOT: how the columns feed each other within a month. What carries over from
     last month is written in the box ("+ last month's Ending Inventory") rather than drawn,
-    which would loop arrows back across the whole picture."""
+    which would loop arrows back across the whole picture. With `found`, a column not found
+    yet is drawn as "?" — the picture fills in as the student finds each one."""
     cs = concepts(kind)
     lines = ["digraph G {", 'rankdir=TB; nodesep=0.2; ranksep=0.35;',   # tall: fits a column
              'node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=13, '
@@ -260,6 +290,9 @@ def diagram(kind: str) -> str:
                     _COLORS["cost"] if c in L.COST_CONCEPTS else _COLORS["calc"])
             extra = ', style="rounded,filled,dashed"' if is_optional(kind, c) else ""
             prev = from_last_month(c)
+            if found is not None and c not in found:
+                lines.append(f'{_q(c)} [fillcolor="#FFFFFF", label="?", style="rounded,dashed"];')
+                continue
             label = heading_idea(kind, c) + (
                 "\\n(your decision)" if is_decision(kind, c) else
                 "\\n(optional)" if is_optional(kind, c) else

@@ -100,7 +100,8 @@ SS.setdefault("results", {})            # piece -> latest PieceResult (not persi
 
 
 def new_piece() -> dict:
-    return {"attempts": [], "help": {}, "colhelp": {}, "submitted": None}
+    return {"attempts": [], "help": {}, "colhelp": {}, "submitted": None, "found": {},
+            "head_misses": 0}
 
 
 SS.setdefault("pieces", {k: new_piece() for k in ALL_PIECES})
@@ -956,57 +957,83 @@ def guided_verdict(scn, ps: dict, res):
 
 
 def design_columns(key: str, scn) -> None:
-    """Which columns the plan needs, why, how they connect — and a heading check."""
+    """Find the plan's columns one heading at a time. A column's name and why it matters are
+    shown only once the student has found it; misses get a little more help each time."""
+    ps = SS["pieces"][key]
+    checked = ps.setdefault("found", {})              # found with the heading check (saved)
+    res = SS["results"].get(key)
+    found = {read_as: heading for _, heading, read_as in (res.columns if res else [])
+             if read_as in columns.concepts(key)}      # ... plus columns already uploaded
+    found.update(checked)
     st.info(text.md(columns.whats_new(key)))
     st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet only Month and Demand are given. Each "
-             "column answers one question about the month: a clear heading in row 1 (from "
-             "column C on), formulas for January–December below it, and yearly totals in row "
-             "14 under every cost column. Any order and any clear wording work.")
-    t1, t2, t3 = st.tabs(["Column planner", "How they connect", "Check my headings"])
-    with t1:
-        for k, (title, blurb, cols) in enumerate(columns.stages(key, scn.whole_workers), 1):
-            if not cols:
-                continue
-            st.markdown(f"##### {k} · {title}")
-            st.caption(blurb)
-            for c in cols:
-                tag = (" · <i>your decision</i>" if c.decision else
-                       " · <i>optional</i>" if c.optional else "")
-                used = ", ".join(c.used_by) or "—"
-                st.markdown(
-                    f"<div class='aa-card'><b>{escape(c.heading)}</b>{tag} — "
-                    f"<i>{escape(c.question)}</i><br>"
-                    f"<b>Why you need it:</b> {escape(c.why)}<br>"
-                    f"<b>Comes from:</b> {escape(c.comes_from)}<br>"
-                    f"<b>Used by:</b> {escape(used)}</div>", unsafe_allow_html=True)
-        st.caption("The headings are ideas — any clear wording is recognised. Helper columns "
-                   "are welcome; put “helper” in the heading if it looks like one of these.")
-    with t2:
-        st.graphviz_chart(columns.diagram(key), width="stretch")
+             "question below becomes one column: a heading in row 1 (from column C on), "
+             "formulas for January–December, totals in row 14. **Check your headings one at a "
+             "time** — a good one is ticked off and tells you why that column matters.")
+    progress = st.empty()                    # filled in after this run's check (below)
+
+    with st.form(f"headform_{key}", clear_on_submit=True, border=False):
+        c1, c2 = st.columns([4, 1], vertical_alignment="bottom")
+        typed = c1.text_input("Check one heading", placeholder="Type a heading you plan to use")
+        go = c2.form_submit_button("Check", width="stretch")
+    if go and typed.strip():
+        r = columns.check_one(key, typed, found)
+        if r["status"] == "ok":
+            found[r["concept"]] = checked[r["concept"]] = typed.strip()
+        elif r["status"] in ("unknown", "other_plan"):
+            ps["head_misses"] = ps.get("head_misses", 0) + 1
+        r.update(heading=typed.strip(), misses=ps.get("head_misses", 0))
+        SS[f"headres_{key}"] = r
+        save_state("headcheck")
+    need = [c for c in columns.concepts(key) if not columns.is_optional(key, c)]
+    done = sum(c in found for c in need)
+    progress.progress(done / len(need), text=f"{done} of {len(need)} columns found")
+    r = SS.get(f"headres_{key}")
+    if r:
+        head = escape(r["heading"])
+        if r["status"] == "ok":
+            extra = (" It's optional." if r.get("optional") else
+                     " It's one of your decisions: you type it." if r.get("decision") else "")
+            st.success(text.md(f"✔ “{head}” is **{r['name']}** — it answers *{r['question']}*\n\n"
+                               f"**Why it matters:** {r['why']}{extra}"))
+            if r.get("note"):
+                st.caption(text.md(r["note"]))
+        elif r["status"] == "repeat":
+            st.info(text.md(f"“{head}” answers the same question as your heading "
+                            f"“{escape(r['yours'])}” ({r['name']}). One column per question is "
+                            "enough."))
+        elif r["status"] == "helper":
+            st.info(text.md(f"“{head}” reads as a **helper column** — fine to have, but it "
+                            "doesn't answer one of the questions."))
+        elif r["status"] == "other_plan":
+            plans = " and ".join(checker.PIECE_TITLES[k].lower() for k in r["plans"])
+            st.warning(text.md(f"“{head}” is a column for the **{plans}**, not this one."))
+        else:
+            st.warning(text.md(f"“{head}”: {columns.support(r['misses'])}"))
+            oq = columns.open_questions(key, found)
+            if r["misses"] >= 2 and oq:
+                st.caption(text.md(f"Try this one: *{oq[0][1][0][0]}*"))
+
+    if found:
+        st.markdown("**Found**")
+        for title, _, cols in columns.stages(key, scn.whole_workers):
+            got = [c for c in cols if c.concept in found]
+            for c in got:
+                st.markdown(text.md(f"✔ **{c.heading}** — your heading “{escape(found[c.concept])}”"))
+                st.caption(text.md(c.why))
+    oq = columns.open_questions(key, found)
+    if oq:
+        st.markdown("**Still to find** — one column for each question:")
+        blocks = [f"*{title}*\n\n" + "\n".join(f"- {q}" + (f" *({tag})*" if tag else "")
+                                                for q, tag in qs) for title, qs in oq]
+        st.markdown(text.md("\n\n".join(blocks)))
+    else:
+        st.success("Every column is found. Now build them in Excel.")
+    with st.expander("How they connect"):
+        st.graphviz_chart(columns.diagram(key, found), width="stretch")
         st.caption("Read it top to bottom, the way a month happens. An arrow into a box means "
-                   "that column uses the value — those are its formula's ingredients. “+ last "
-                   "month's …” means it also uses the row above (January: a given starting "
-                   "value). Yellow: given; grey: planning cells; green: your decisions; blue: "
-                   "calculated; peach: costs. Use the ⤢ button on the diagram to enlarge it.")
-    with t3:
-        st.write("Type the headings you plan to use, **one per line, in column order** (the "
-                 "first line is column C). You'll see how the checker reads each one and "
-                 "what's still missing — before you build anything in Excel.")
-        raw = st.text_area("Your headings", key=f"headcheck_{key}", height=180,
-                           placeholder="Starting Stock\nBacklog at start\nProduction\n…")
-        if raw.strip():
-            out = columns.check_headings(key, raw.splitlines())
-            md_table(pd.DataFrame([{"Column": a, "Your heading": h, "Read as": r}
-                                   for a, h, r in out["rows"]]))
-            if out["missing"]:
-                st.warning("**Still missing** — your plan can't answer these yet:\n"
-                           + "\n".join(f"- **{escape(h)}** — {escape(q)}"
-                                       for h, q in out["missing"]))
-            else:
-                st.success("Every column the plan needs is there. Now build it in Excel.")
-            for concept, letters in out["duplicates"]:
-                st.caption(f"Columns {', '.join(letters)} all look like {concept}; only "
-                           f"{letters[0]} would be checked.")
+                   "that column uses the value. A **?** is a column you haven't found yet — the "
+                   "picture fills in as you go.")
 
 
 def show_guidance(key: str, scn) -> None:

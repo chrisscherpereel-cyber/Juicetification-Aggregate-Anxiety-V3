@@ -51,29 +51,47 @@ def test_decisions_and_level_planning_cells_are_explained():
     assert "rounded" not in columns.comes_from("chase", "Workers", whole_workers=False)
 
 
-def test_whats_new_for_each_plan():
-    assert "14 columns" in columns.whats_new("chase")
-    assert "Same 14 columns" in columns.whats_new("level")
+def test_whats_new_does_not_give_the_new_columns_away():
+    assert "14 questions" in columns.whats_new("chase")
+    assert "Same 14" in columns.whats_new("level").replace("same", "Same")
     new = columns.whats_new("hybrid")
-    for c in ("Overtime Production", "Subcontract Production", "Total Production",
-              "Overtime Cost", "Subcontract Cost"):
-        assert c in new
-    assert "5 new ones" in new
+    assert "5 new questions" in new
+    for c in ("Overtime Production", "Subcontract Production", "Total Production"):
+        assert c not in new
 
 
-def test_heading_check_reads_like_the_checker_and_lists_what_is_missing():
-    out = columns.check_headings("chase", ["Starting Stock", "Backlog at start", "Production",
-                                           "Crew", "original workers", "Crew size", ""])
-    read = {h: r for _, h, r in out["rows"]}
-    assert read["Starting Stock"] == "Beginning Inventory"
-    assert read["Backlog at start"] == "Beginning Backorders"
-    assert read["Crew"] == "Workers" and read["original workers"].startswith("helper")
-    assert read["Crew size"].startswith("duplicate")
-    assert [r[0] for r in out["rows"]][:3] == ["C", "D", "E"]
-    missing = [h for h, _ in out["missing"]]
-    assert "Hires" in missing and "Total Cost" in missing and "Workers" not in missing
-    full = columns.check_headings("chase", [h for _, h in workbook.default_columns("chase")])
-    assert full["missing"] == []
+def test_one_heading_at_a_time():
+    found = {}
+    r = columns.check_one("chase", "Starting Stock", found)
+    assert r["status"] == "ok" and r["name"] == "Beginning Inventory"
+    assert r["why"] and r["question"]                     # why it matters, once found
+    found[r["concept"]] = "Starting Stock"
+    assert columns.check_one("chase", "Opening inventory", found)["status"] == "repeat"
+    assert columns.check_one("chase", "stuff", found) == {"status": "unknown"}   # no names
+    assert columns.check_one("chase", "helper: notes", found)["status"] == "helper"
+    assert columns.check_one("chase", "Overtime", found) == {"status": "other_plan",
+                                                             "plans": ["hybrid"]}
+    assert columns.check_one("hybrid", "Overtime", found)["status"] == "ok"
+    assert columns.check_one("chase", "", found)["status"] == "empty"
+    # a bare "Inventory" is read as the END of the month, and says so
+    assert "end" in columns.check_one("chase", "Inventory", found)["note"]
+    assert not columns.check_one("chase", "Closing stock", found)["note"]
+
+
+def test_support_grows_with_each_miss():
+    s1, s2, s3 = (columns.support(n) for n in (1, 2, 3))
+    assert len({s1, s2, s3}) == 3 and len(s1) < len(s3)
+    assert columns.support(9) == s3
+    assert "inventory" not in s1.lower() and "inventory" in s3.lower()
+
+
+def test_open_questions_list_questions_not_column_names():
+    oq = columns.open_questions("hybrid", {"Beginning Inventory": "x"})
+    flat = [(q, tag) for _, qs in oq for q, tag in qs]
+    assert all("Inventory" not in q for q, _ in flat)
+    assert ("How many bottles did you make on overtime?", "new") in flat
+    assert ("How many bottles could your workforce make on regular time?", "optional") in flat
+    assert "How many bottles are on the shelf when the month starts?" not in [q for q, _ in flat]
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -88,17 +106,27 @@ def test_diagram_is_valid_dot_with_every_column(kind):
         assert '"Planning cells" -> "Regular Production"' in dot
 
 
+def test_diagram_hides_columns_not_found_yet():
+    dot = columns.diagram("chase", {"Workers": "Crew"})
+    assert '"Workers" [fillcolor' in dot and 'label="Workers' in dot
+    assert '"Hires" [fillcolor="#FFFFFF", label="?"' in dot
+
+
 def test_start_here_has_a_printable_column_planner():
     ws = load_workbook(io.BytesIO(workbook.build_workbook(scn7(), student_name="x",
                                                           student_id=SID)))[L.SHEET_START]
     cells = {c.coordinate: c for row in ws.iter_rows() for c in row if c.value is not None}
     head = next(c for c in cells.values() if c.value == "My heading")
     r = head.row
-    assert ws[f"B{r}"].value == "Column" and ws[f"F{r}"].value == "Needed in"
-    names = [ws[f"B{k}"].value for k in range(r + 1, r + 30)]
-    for c in L.REQUIRED["hybrid"]:
-        assert workbook.L.heading_for("hybrid", c) in names, c
-    row = names.index("Overtime Production") + r + 1
-    assert ws[f"F{row}"].value == "Hybrid"
-    assert ws[f"G{row}"].protection.locked is False        # students can type their heading
-    assert ws.row_breaks.brk                                 # planner prints on its own page
+    assert [ws[f"{x}{r}"].value for x in "BCDE"] == ["#", "Question it answers", "My heading",
+                                                       "Needed in"]
+    text_below = " ".join(str(ws[f"{x}{k}"].value) for k in range(r + 1, r + 30)
+                          for x in "BCE" if ws[f"{x}{k}"].value is not None)
+    assert "How many bottles did you make on overtime?" in text_below
+    for name in ("Beginning Inventory", "Ending Backorders", "Labor Cost"):
+        assert name not in text_below                         # questions, not answers
+    row = next(k for k in range(r + 1, r + 30)
+               if ws[f"C{k}"].value == "How many bottles did you make on overtime?")
+    assert ws[f"E{row}"].value == "Hybrid"
+    assert ws[f"D{row}"].protection.locked is False           # students can type their heading
+    assert ws.row_breaks.brk                                    # prints on its own page

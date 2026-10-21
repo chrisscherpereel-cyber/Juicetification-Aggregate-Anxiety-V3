@@ -198,52 +198,42 @@ def _start_sheet(wb, scn: Scenario, name: str, sid: str):
 
 
 def _column_planner(ws, scn: Scenario, r: int) -> int:
-    """A printable planner: every column the plans need, in the order a month happens, with
-    why it's needed and what it comes from, and a cell for the student's own heading."""
+    """A printable planner: the questions every plan must answer, in the order a month
+    happens, with a cell for the student's own heading. It gives the questions, not the
+    columns — the app's heading check confirms each heading and says why it matters."""
     from openpyxl.worksheet.pagebreak import Break
     kinds = _pieces(scn)
     ws.row_breaks.append(Break(id=r - 1))           # prints on a page of its own
     _put(ws, f"B{r}", "Column planner — fill in your headings before you build", font=H2)
-    _put(ws, f"B{r + 1}", "Each row is one column of your plan: the question it answers, why "
-                          "you need it and what it is calculated from (those are its formula's "
-                          "ingredients). Write the heading you'll use in the last column. The "
-                          "level plan needs the same columns as the chase plan.", font=NOTE,
-         wrap=True)
-    ws.merge_cells(f"B{r + 1}:G{r + 1}")
+    _put(ws, f"B{r + 1}", "Each question becomes one column of your plan. Write the heading "
+                          "you'll use, then check it in the app (① Design your columns ▸ "
+                          "Check one heading). The level plan needs the same columns as the "
+                          "chase plan.", font=NOTE, wrap=True)
+    ws.merge_cells(f"B{r + 1}:E{r + 1}")
     ws.row_dimensions[r + 1].height = 30
     r += 2
-    heads = ["Column", "Question it answers", "Why you need it", "Comes from", "Needed in",
-             "My heading"]
-    for j, h in enumerate(heads):
-        _put(ws, f"{'BCDEFG'[j]}{r}", h, font=HEAD_FONT, fill=HEAD_FILL, border=True,
+    for j, h in enumerate(["#", "Question it answers", "My heading", "Needed in"]):
+        _put(ws, f"{'BCDE'[j]}{r}", h, font=HEAD_FONT, fill=HEAD_FILL, border=True,
              align=CENTER)
-    for col, w in (("E", 46), ("F", 13), ("G", 24)):
-        ws.column_dimensions[col].width = w
+    ws.column_dimensions["E"].width = 14
     stage_rows = columns.stages("hybrid" if "hybrid" in kinds else "chase", scn.whole_workers)
+    n = 0
     for k, (title, _, cols) in enumerate(stage_rows, 1):
         r += 1
         _put(ws, f"B{r}", f"{k}. {title}", font=BOLD, fill=NA_FILL, border=True)
-        ws.merge_cells(f"B{r}:G{r}")
+        ws.merge_cells(f"B{r}:E{r}")
         for c in cols:
             r += 1
+            n += 1
             need = [L.PLAN_LABEL[kd] for kd in kinds if c.concept in columns.concepts(kd)]
             label = "all plans" if len(need) == len(kinds) else ", ".join(need)
             if c.optional:
                 label = "optional"
-            _put(ws, f"B{r}", c.heading, font=BOLD, border=True, wrap=True)
+            _put(ws, f"B{r}", n, border=True, align=CENTER)
             _put(ws, f"C{r}", c.question, border=True, wrap=True)
-            _put(ws, f"D{r}", c.why, border=True, wrap=True)
-            src = c.comes_from if not c.decision else (
-                "Chase: " + columns.comes_from("chase", c.concept, scn.whole_workers)
-                + " Level: " + columns.comes_from("level", c.concept, scn.whole_workers)
-                + " Hybrid: your decision." if c.concept in ("Workers", "Regular Production")
-                else "Hybrid: your decision.")
-            if c.concept == "Ending Inventory" or c.concept == "Ending Backorders":
-                src = columns.comes_from("chase", c.concept) + " (Hybrid: Total Production.)"
-            _put(ws, f"E{r}", src, border=True, wrap=True)
-            _put(ws, f"F{r}", label, border=True, wrap=True, align=CENTER)
-            _input(ws, f"G{r}").border = BOX
-            ws.row_dimensions[r].height = 15 * max(2, 1 + max(len(c.why), len(src)) // 48)
+            _input(ws, f"D{r}").border = BOX
+            _put(ws, f"E{r}", label, border=True, wrap=True, align=CENTER)
+            ws.row_dimensions[r].height = 24
     return r + 2
 
 

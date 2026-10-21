@@ -38,21 +38,28 @@ the month starts?"*, *"How many orders are still unfilled at the end of the mont
 student turns each one into a column. Help with designing them
 ([aggplan/columns.py](aggplan/columns.py)), in the step's **① Design your columns** panel:
 
-* **What's new** for this plan: the chase plan's 14 columns; the level plan uses the *same 14*
-  (only Production and Workers come from planning cells); the hybrid adds 5 (Overtime,
-  Subcontract and Total Production, Overtime and Subcontract Cost) and makes four columns
-  decisions.
-* **Column planner** — the columns in the order a month happens (start of the month → your
-  plan → what happens → what it costs). For each: the question, **why you need it**, what it
-  **comes from** (its formula's ingredients, never the formula) and what **uses** it. A test
-  keeps "comes from" in step with what the checker requires.
-* **How they connect** — a diagram of which column feeds which within a month; what carries
-  over from last month is written in the box.
-* **Check my headings** — the student types the headings they plan to use (one per line, from
-  column C) and sees how each is read and what's still missing, before building anything.
+Nothing about a column is given away before the student finds it:
 
-The workbook's **Start Here** sheet has the same planner as a printable table (on its own
-landscape page) with a *My heading* column to fill in before building.
+* **What's new** for this plan — a count, not a list: 14 questions for the chase plan; the
+  level plan uses the same columns (only Production and Workers change); the hybrid adds 5 new
+  questions (marked *new*) and makes four columns decisions.
+* **Still to find** — the open questions, grouped in the order a month happens (start of the
+  month → your plan → what happens → what it costs). Questions only, no column names.
+* **Check one heading** — the student types one planned heading at a time:
+  * found → ticked off, with the column's name, the question it answers and **why it matters**
+    (and a note if, say, a bare "Inventory" will be read as the *end* of the month);
+  * same question as a heading already found → said so; a helper column → said so; a column
+    from another plan (e.g. overtime on the chase plan) → said so;
+  * not recognised → help that grows with each miss: say what it measures → turn an open
+    question's key words into a heading (and "try this one") → the kinds of words the
+    checker understands.
+  Found columns and misses are saved with the student's work; columns already read from an
+  upload count as found.
+* **How they connect** — a diagram of which column feeds which; a column not found yet is a
+  **?**, so the picture fills in as the student goes.
+
+The workbook's **Start Here** sheet has the questions as a printable table (on its own page) —
+question, *My heading* to fill in, and which plans need it — without the answers.
 
 The checker reads the student's headings ([aggplan/recognize.py](aggplan/recognize.py)), so
 **any order and any clear wording works**: "Starting Stock", "Beg Inv" and "Opening inventory"
@@ -372,7 +379,7 @@ aggplan/               no Streamlit import; unit-testable
   engine.py            answer key: simulate(), chase/level reference plans, feasibility
   layout.py            fixed cells: given columns, totals row, planning cells, Summary
   recognize.py         reads the student's headings -> columns
-  columns.py           column planner, what's new, diagram, heading check
+  columns.py           one-heading check, open questions, what's new, diagram
   checker.py           grades one piece of an uploaded workbook
   hints.py             the four-step hint ladders and the column questions
   guide.py             the guided hybrid: starting point, questions, verdict
