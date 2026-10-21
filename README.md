@@ -14,9 +14,9 @@ peak. Each student ID produces its own reproducible demand forecast, so answers 
 
 | Step | What the student does |
 |------|-----------------------|
-| **1 · Scenario & workbook** | Signs in, studies the demand forecast and the planning policies, and downloads a personal `.xlsx` built for the policies set in the sidebar. |
-| **2 · Chase plan** | Designs the chase worksheet, uploads, fixes, re-uploads; submits when it is all correct. |
-| **3 · Level plan** | Opens once the chase plan is submitted. Same loop. |
+| **1 · Scenario & workbook** | Signs in and studies the demand forecast and the planning policies (set in the sidebar). The workbook comes next, after the columns are designed; once downloaded, a fresh copy is available here. |
+| **2 · Chase plan** | Designs the columns (one heading at a time), then downloads a personal `.xlsx` with those headings already in row 1 of the Chase and Level sheets, in the recommended order. Writes the formulas, uploads, fixes, re-uploads; submits when it is all correct. A small *download anyway* gives a blank workbook early; the report notes it. |
+| **3 · Level plan** | Opens once the chase plan is submitted. Same columns as the chase plan (already found and already in the workbook); same loop. |
 | **4 · Hybrid plan** | Opens after the level plan. **Guided** (default): a starting plan and questions that lead to a good solution. **Build it yourself**: the student designs the sheet. Either way the plan must be correct **and** respect every limit. Skipped when the hybrid is switched **off**. |
 | **5 · Compare & recommend** | The Summary sheet: each plan's yearly figures, the cheaper plan (`IF`), the savings (`ABS`), a recommendation and a written justification. |
 | **6 · Final report** | A PDF listing every piece. A DRAFT is available at any time. |

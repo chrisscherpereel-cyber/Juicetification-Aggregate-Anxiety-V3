@@ -646,6 +646,21 @@ def _build(scn, student_name, student_id, game, solution, hybrid_decision, colum
     return bio.getvalue()
 
 
+def add_headings(data: bytes, headings: Dict[str, Sequence[str]]) -> bytes:
+    """The student's workbook with their own column headings already in row 1 (from column C)
+    of the given plan sheets, e.g. {"chase": [...], "level": [...]}. Only the headings: every
+    formula is still the student's to write."""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(data))
+    for kind, heads in headings.items():
+        ws = wb[L.PLAN_SHEETS[kind]]
+        for j, h in enumerate(heads):
+            ws.cell(row=1, column=L.FIRST_STUDENT_COL + j).value = h
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
 def add_hybrid_start(data: bytes, scn: Scenario, decision: Decision) -> bytes:
     """The guided hybrid's starting point: the student's own workbook with the Hybrid Plan
     sheet filled in — every column, formula and total — and the starting plan's workers and

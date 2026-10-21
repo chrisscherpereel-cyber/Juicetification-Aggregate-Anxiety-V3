@@ -133,6 +133,9 @@ def build_report(scn: Scenario, *, student_name: str, student_id: str, identity_
             story.append(P(_clean(f"{p['title']}, every upload (cells correct): "
                                   f"{p['history']}", cmap), small))
     for p in pieces:
+        if p.get("note"):
+            story.append(P(_clean(f"{p['title']}: {p['note']}", cmap), small))
+    for p in pieces:
         if p.get("sha"):
             story.append(P(_clean(f"{p['title']}: {p.get('file', '')} · SHA-256 "
                                   f"{p['sha'][:24]}…", cmap), small))

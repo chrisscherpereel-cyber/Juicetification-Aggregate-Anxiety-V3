@@ -22,7 +22,8 @@ def test_pieces_unlock_in_order():
     at.text_input[1].input("S1")
     _button(at, "Start").click()
     at = at.run()
-    assert not at.exception and at.session_state["wb_bytes"][:2] == b"PK"
+    assert not at.exception
+    assert any("Your workbook comes after your columns" in i.value for i in at.info)
     assert _button(at, "Level plan").disabled and _button(at, "Hybrid plan").disabled
     _button(at, "Start the chase plan").click()
     at = at.run()

@@ -592,25 +592,18 @@ def page_start() -> None:
         md_table(pd.DataFrame(text.param_rows(scn), columns=["Item", "Value", "Unit"]))
     with c2:
         st.subheader("Your workbook")
-        if SS.get("wb_for") != (stu["sid"], scn.config_hash, HYBRID_ON):
-            SS["wb_bytes"] = workbook.build_workbook(scn, student_name=stu["name"],
-                                                     student_id=stu["sid"], game=GAME)
-            SS["wb_for"] = (stu["sid"], scn.config_hash, HYBRID_ON)
-        got = SS.get("downloaded_hash")
-        if got and got != scn.config_hash:
-            st.warning("You changed a policy after downloading. **Download the workbook again** "
-                       "— the old one was built for the other policy and won't be accepted. "
-                       "Copy across any work you already did.")
-
-        def _downloaded(h=scn.config_hash):
-            SS["downloaded_hash"] = h
-
-        st.download_button("⬇ Download my Excel workbook", SS["wb_bytes"],
-                           file_name=workbook.file_name(stu["name"], stu["sid"]),
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           type="primary", width="stretch", on_click=_downloaded)
-        st.caption("Download it once and keep working in the same file for every piece. Works "
-                   "in Excel and Google Sheets (File → Download → .xlsx).")
+        if SS.get("downloaded_hash"):
+            policy_warning(scn)
+            download_workbook(scn, "start", label="⬇ Download my workbook again",
+                              headings=workbook_headings() if chase_columns_done() else None,
+                              primary=False)
+            st.caption("You already have it — keep working in the same file for every piece. "
+                       "Download again only for a fresh copy (for example after changing a "
+                       "policy) and copy your work across.")
+        else:
+            st.info("**Your workbook comes after your columns.** On the **Chase plan** step, "
+                    "work out which columns your plan needs and check each heading. Then "
+                    "download the workbook — with your headings already in row 1.")
         st.markdown("**You'll submit it in pieces:**")
         st.markdown("\n".join(f"{i}. **{checker.PIECE_TITLES[k]}** — {GOALS[k].split('.')[0]}."
                               for i, k in enumerate(PIECES, start=1)))
@@ -740,6 +733,8 @@ def piece_record(key: str) -> dict:
             "first": f"{first['ok']} / {first['total']} correct" if first else "",
             "last": f"{last['ok']} / {last['total']} correct" if last else "",
             "history": " → ".join(f"{a['ok']}/{a['total']}" for a in ok),
+            "note": ("downloaded the workbook before finishing the column design."
+                     if ps.get("skipped_design") else ""),
             "submitted_at": sub["at"] if sub else "",
             "help": max(list(ps["help"].values()) + list(ps["colhelp"].values()) + [0]),
             "file": sub["file"] if sub else "", "sha": sub["sha"] if sub else ""}
@@ -983,6 +978,75 @@ def guided_verdict(scn, ps: dict, res):
     return v
 
 
+def found_columns(key: str) -> Dict[str, str]:
+    """{concept: heading} found for a plan: headings checked in the panel plus columns read
+    from the plan's latest upload. The level plan uses the chase plan's columns, so it starts
+    with everything found there."""
+    out: Dict[str, str] = {}
+    for k in (["chase", key] if key == "level" else [key]):
+        res = SS["results"].get(k)
+        for _, heading, read_as in (res.columns if res else []):
+            if read_as in columns.concepts(key):
+                out.setdefault(read_as, heading)
+        out.update({c: h for c, h in SS["pieces"][k].get("found", {}).items()
+                    if c in columns.concepts(key)})
+    return out
+
+
+def chase_columns_done() -> bool:
+    f = found_columns("chase")
+    return all(c in f for c in columns.concepts("chase") if not columns.is_optional("chase", c))
+
+
+def workbook_headings() -> Dict[str, List[str]]:
+    """The student's chase headings in the recommended (month) order, for row 1 of the Chase
+    and Level sheets — the level plan needs the same columns."""
+    f = found_columns("chase")
+    heads = [f[c] for c in columns.concepts("chase") if c in f]
+    return {"chase": heads, "level": heads}
+
+
+def workbook_bytes(scn, headings=None) -> bytes:
+    stu = SS["student"]
+    if SS.get("wb_for") != (stu["sid"], scn.config_hash, HYBRID_ON):
+        SS["wb_bytes"] = workbook.build_workbook(scn, student_name=stu["name"],
+                                                 student_id=stu["sid"], game=GAME)
+        SS["wb_for"] = (stu["sid"], scn.config_hash, HYBRID_ON)
+    if not headings:
+        return SS["wb_bytes"]
+    sig = (SS["wb_for"], repr(sorted(headings.items())))
+    if SS.get("wb_head_for") != sig:
+        SS["wb_head_bytes"] = workbook.add_headings(SS["wb_bytes"], headings)
+        SS["wb_head_for"] = sig
+    return SS["wb_head_bytes"]
+
+
+def policy_warning(scn) -> None:
+    got = SS.get("downloaded_hash")
+    if got and got != scn.config_hash:
+        st.warning("You changed a policy after downloading. **Download the workbook again** "
+                   "— the old one was built for the other policy and won't be accepted. "
+                   "Copy across any work you already did.")
+
+
+def download_workbook(scn, where: str, *, label: str, headings=None, primary: bool = True,
+                      skipped: bool = False) -> None:
+    stu = SS["student"]
+
+    def _downloaded(h=scn.config_hash):
+        SS["downloaded_hash"] = h
+        if skipped:
+            SS["pieces"]["chase"]["skipped_design"] = True
+        save_state("download")
+
+    st.download_button(label, workbook_bytes(scn, headings),
+                       file_name=workbook.file_name(stu["name"], stu["sid"]),
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       type="primary" if primary else "secondary",
+                       width="stretch" if primary else "content", on_click=_downloaded,
+                       key=f"dl_wb_{where}")
+
+
 def column_order(key: str, res, found: Dict[str, str]) -> None:
     """Every column is found: is the order sensible? Judge the workbook's order once it has
     been uploaded with every column, otherwise the order the headings were checked in."""
@@ -1026,9 +1090,7 @@ def design_columns(key: str, scn) -> None:
     ps = SS["pieces"][key]
     checked = ps.setdefault("found", {})              # found with the heading check (saved)
     res = SS["results"].get(key)
-    found = {read_as: heading for _, heading, read_as in (res.columns if res else [])
-             if read_as in columns.concepts(key)}      # ... plus columns already uploaded
-    found.update(checked)
+    found = found_columns(key)                        # ... plus uploads (level: + chase)
     st.info(text.md(columns.whats_new(key)))
     st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet only Month and Demand are given. Each "
              "question below becomes one column: a heading in row 1 (from column C on), "
@@ -1083,6 +1145,14 @@ def design_columns(key: str, scn) -> None:
 
     if done == len(need):
         column_order(key, res, found)
+        if key == "chase":
+            st.markdown("#### ② Get your workbook")
+            policy_warning(scn)
+            download_workbook(scn, "chase", label="⬇ Download my workbook (with my headings)",
+                              headings=workbook_headings())
+            st.caption("Row 1 of the **Chase Plan** and **Level Plan** sheets already holds your "
+                       "headings, in the recommended order. Write the formulas below them — and "
+                       "keep working in this one file for every piece.")
     # newest first: the latest check is above; then how they connect, what is still open,
     # and the earlier finds (most recent first) at the bottom
     with st.expander("How they connect"):
@@ -1104,6 +1174,11 @@ def design_columns(key: str, scn) -> None:
             c = info[concept]
             st.markdown(text.md(f"✔ **{c.heading}** — your heading “{escape(found[concept])}”"))
             st.caption(text.md(c.why))
+    if key == "chase" and done < len(need) and not SS.get("downloaded_hash"):
+        st.caption("Your workbook comes once every column is found, with your headings already "
+                   "in it. Already know the columns, or need the file now?")
+        download_workbook(scn, "chase_skip", label="Download the workbook anyway (no headings)",
+                          primary=False, skipped=True)
 
 
 def show_guidance(key: str, scn) -> None:
