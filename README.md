@@ -33,9 +33,26 @@ types a heading in row 1 for every column the plan needs (peach cells, from colu
 formulas for January–December below, and yearly totals in row 14. Planning cells under the
 grid hold the one-off calculations (capacity per worker, level rate, level workforce, …).
 
-The app never lists the columns. It asks the questions a plan must answer each month —
-*"How many bottles are on the shelf when the month starts?"*, *"How many orders are still
-unfilled at the end of the month?"* — and the student turns each one into a column.
+Each column answers one question about the month — *"How many bottles are on the shelf when
+the month starts?"*, *"How many orders are still unfilled at the end of the month?"* — and the
+student turns each one into a column. Help with designing them
+([aggplan/columns.py](aggplan/columns.py)), in the step's **① Design your columns** panel:
+
+* **What's new** for this plan: the chase plan's 14 columns; the level plan uses the *same 14*
+  (only Production and Workers come from planning cells); the hybrid adds 5 (Overtime,
+  Subcontract and Total Production, Overtime and Subcontract Cost) and makes four columns
+  decisions.
+* **Column planner** — the columns in the order a month happens (start of the month → your
+  plan → what happens → what it costs). For each: the question, **why you need it**, what it
+  **comes from** (its formula's ingredients, never the formula) and what **uses** it. A test
+  keeps "comes from" in step with what the checker requires.
+* **How they connect** — a diagram of which column feeds which within a month; what carries
+  over from last month is written in the box.
+* **Check my headings** — the student types the headings they plan to use (one per line, from
+  column C) and sees how each is read and what's still missing, before building anything.
+
+The workbook's **Start Here** sheet has the same planner as a printable table (on its own
+landscape page) with a *My heading* column to fill in before building.
 
 The checker reads the student's headings ([aggplan/recognize.py](aggplan/recognize.py)), so
 **any order and any clear wording works**: "Starting Stock", "Beg Inv" and "Opening inventory"
@@ -355,6 +372,7 @@ aggplan/               no Streamlit import; unit-testable
   engine.py            answer key: simulate(), chase/level reference plans, feasibility
   layout.py            fixed cells: given columns, totals row, planning cells, Summary
   recognize.py         reads the student's headings -> columns
+  columns.py           column planner, what's new, diagram, heading check
   checker.py           grades one piece of an uploaded workbook
   hints.py             the four-step hint ladders and the column questions
   guide.py             the guided hybrid: starting point, questions, verdict

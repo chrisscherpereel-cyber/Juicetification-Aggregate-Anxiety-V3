@@ -29,7 +29,8 @@ import student_store as store
 from juice_director import resolve_config, serve_manifest_if_requested
 from manifest import MANIFEST
 
-from aggplan import checker, engine, guide, hints, layout as L, persistence, saving, text, workbook
+from aggplan import (checker, columns, engine, guide, hints, layout as L, persistence, saving,
+                     text, workbook)
 from aggplan import identity as ident
 from aggplan.recognize import HELPER
 from aggplan.scenario import MONTHS as L_MONTHS, resolve_scenario
@@ -954,6 +955,60 @@ def guided_verdict(scn, ps: dict, res):
     return v
 
 
+def design_columns(key: str, scn) -> None:
+    """Which columns the plan needs, why, how they connect — and a heading check."""
+    st.info(text.md(columns.whats_new(key)))
+    st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet only Month and Demand are given. Each "
+             "column answers one question about the month: a clear heading in row 1 (from "
+             "column C on), formulas for January–December below it, and yearly totals in row "
+             "14 under every cost column. Any order and any clear wording work.")
+    t1, t2, t3 = st.tabs(["Column planner", "How they connect", "Check my headings"])
+    with t1:
+        for k, (title, blurb, cols) in enumerate(columns.stages(key, scn.whole_workers), 1):
+            if not cols:
+                continue
+            st.markdown(f"##### {k} · {title}")
+            st.caption(blurb)
+            for c in cols:
+                tag = (" · <i>your decision</i>" if c.decision else
+                       " · <i>optional</i>" if c.optional else "")
+                used = ", ".join(c.used_by) or "—"
+                st.markdown(
+                    f"<div class='aa-card'><b>{escape(c.heading)}</b>{tag} — "
+                    f"<i>{escape(c.question)}</i><br>"
+                    f"<b>Why you need it:</b> {escape(c.why)}<br>"
+                    f"<b>Comes from:</b> {escape(c.comes_from)}<br>"
+                    f"<b>Used by:</b> {escape(used)}</div>", unsafe_allow_html=True)
+        st.caption("The headings are ideas — any clear wording is recognised. Helper columns "
+                   "are welcome; put “helper” in the heading if it looks like one of these.")
+    with t2:
+        st.graphviz_chart(columns.diagram(key), width="stretch")
+        st.caption("Read it top to bottom, the way a month happens. An arrow into a box means "
+                   "that column uses the value — those are its formula's ingredients. “+ last "
+                   "month's …” means it also uses the row above (January: a given starting "
+                   "value). Yellow: given; grey: planning cells; green: your decisions; blue: "
+                   "calculated; peach: costs. Use the ⤢ button on the diagram to enlarge it.")
+    with t3:
+        st.write("Type the headings you plan to use, **one per line, in column order** (the "
+                 "first line is column C). You'll see how the checker reads each one and "
+                 "what's still missing — before you build anything in Excel.")
+        raw = st.text_area("Your headings", key=f"headcheck_{key}", height=180,
+                           placeholder="Starting Stock\nBacklog at start\nProduction\n…")
+        if raw.strip():
+            out = columns.check_headings(key, raw.splitlines())
+            md_table(pd.DataFrame([{"Column": a, "Your heading": h, "Read as": r}
+                                   for a, h, r in out["rows"]]))
+            if out["missing"]:
+                st.warning("**Still missing** — your plan can't answer these yet:\n"
+                           + "\n".join(f"- **{escape(h)}** — {escape(q)}"
+                                       for h, q in out["missing"]))
+            else:
+                st.success("Every column the plan needs is there. Now build it in Excel.")
+            for concept, letters in out["duplicates"]:
+                st.caption(f"Columns {', '.join(letters)} all look like {concept}; only "
+                           f"{letters[0]} would be checked.")
+
+
 def show_guidance(key: str, scn) -> None:
     ps = SS["pieces"][key]
     st.markdown(f"<div class='aa-card'><b>The goal.</b> {escape(GOALS[key])}</div>",
@@ -968,19 +1023,7 @@ def show_guidance(key: str, scn) -> None:
                     "isn't checked — and recommend **Chase** or **Level**.")
     else:
         with st.expander("① Design your columns", expanded=not ps["attempts"]):
-            st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet, only Month and Demand are given. "
-                     "Every month your plan must answer the questions below. Turn each one into "
-                     "a column: type a clear heading in row 1 (from column C on), then the "
-                     "formulas for January–December, then the yearly totals in row 14 under "
-                     "every cost column. Put them in whatever order makes sense to you.")
-            qs = [hints.QUESTIONS[c] for c in L.REQUIRED[key]]
-            st.markdown("\n".join(f"- {q}" for q in qs))
-            if key == "hybrid":
-                st.caption("Four of these are your decisions (workers, regular production, "
-                           "overtime, subcontracting): type them as numbers or formulas. "
-                           "Everything else is calculated.")
-            st.caption("Ask yourself for each one: which other columns or given values does it "
-                       "depend on? That's your formula. Helper columns are welcome.")
+            design_columns(key, scn)
         with st.expander("② Planning cells (do these first)", expanded=not ps["attempts"]):
             st.write(f"Under the grid on the **{L.PLAN_SHEETS[key]}** sheet:")
             md_table(pd.DataFrame([{"Cell": L.planning_ref(key, pc.key),
