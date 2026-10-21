@@ -1014,13 +1014,13 @@ def design_columns(key: str, scn) -> None:
             if r["misses"] >= 2 and oq:
                 st.caption(text.md(f"Try this one: *{oq[0][1][0][0]}*"))
 
-    if found:
-        st.markdown("**Found**")
-        for title, _, cols in columns.stages(key, scn.whole_workers):
-            got = [c for c in cols if c.concept in found]
-            for c in got:
-                st.markdown(text.md(f"✔ **{c.heading}** — your heading “{escape(found[c.concept])}”"))
-                st.caption(text.md(c.why))
+    # newest first: the latest check is above; then how they connect, what is still open,
+    # and the earlier finds (most recent first) at the bottom
+    with st.expander("How they connect"):
+        st.graphviz_chart(columns.diagram(key, found), width="stretch")
+        st.caption("Read it top to bottom, the way a month happens. An arrow into a box means "
+                   "that column uses the value. A **?** is a column you haven't found yet — the "
+                   "picture fills in as you go.")
     oq = columns.open_questions(key, found)
     if oq:
         st.markdown("**Still to find** — one column for each question:")
@@ -1029,11 +1029,14 @@ def design_columns(key: str, scn) -> None:
         st.markdown(text.md("\n\n".join(blocks)))
     else:
         st.success("Every column is found. Now build them in Excel.")
-    with st.expander("How they connect"):
-        st.graphviz_chart(columns.diagram(key, found), width="stretch")
-        st.caption("Read it top to bottom, the way a month happens. An arrow into a box means "
-                   "that column uses the value. A **?** is a column you haven't found yet — the "
-                   "picture fills in as you go.")
+    if found:
+        info = {c.concept: c for _, _, cols in columns.stages(key, scn.whole_workers)
+                for c in cols}
+        st.markdown("**Found so far** — newest first")
+        for concept in reversed(list(found)):          # found in the order they were found
+            c = info[concept]
+            st.markdown(text.md(f"✔ **{c.heading}** — your heading “{escape(found[concept])}”"))
+            st.caption(text.md(c.why))
 
 
 def show_guidance(key: str, scn) -> None:

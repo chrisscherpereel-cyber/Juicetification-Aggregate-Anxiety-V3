@@ -60,3 +60,18 @@ def test_misses_get_more_help_and_a_find_explains_why():
     at = check(at, "Opening inventory")
     assert "same question" in at.info[-1].value
     assert "How many bottles are on the shelf when the month starts?" not in texts(at)
+
+
+def test_newest_find_first_and_diagram_above_the_lists():
+    at = chase_page()
+    for h in ("Starting Stock", "Crew", "Hired"):
+        at = check(at, h)
+    found = [m.value for m in at.markdown if m.value.startswith("✔ **")]
+    assert [f.split("**")[1] for f in found] == ["Hires", "Workers", "Beginning Inventory"]
+    order = [m.value for m in at.markdown]
+    assert any("Still to find" in v for v in order) and any("Found so far" in v for v in order)
+    still = next(i for i, v in enumerate(order) if "Still to find" in v)
+    so_far = next(i for i, v in enumerate(order) if "Found so far" in v)
+    assert still < so_far                                     # older finds at the bottom
+    labels = [e.label for e in at.expander]
+    assert "How they connect" in labels

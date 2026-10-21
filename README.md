@@ -55,6 +55,8 @@ Nothing about a column is given away before the student finds it:
     checker understands.
   Found columns and misses are saved with the student's work; columns already read from an
   upload count as found.
+  The panel reads top down, newest first: the latest check, *How they connect*, *Still to
+  find*, then the earlier finds (most recent first) at the bottom.
 * **How they connect** — a diagram of which column feeds which; a column not found yet is a
   **?**, so the picture fills in as the student goes.
 
