@@ -39,7 +39,22 @@ from aggplan.scenario import MONTHS as L_MONTHS, resolve_scenario
 st.set_page_config(page_title="Aggregate Anxiety — Excel", page_icon="🧃", layout="wide")
 SS = st.session_state
 serve_manifest_if_requested(MANIFEST)
-CFG, CTX = resolve_config(MANIFEST)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _game_config(code: str) -> dict:
+    """The Director publishes each game's settings to the store under its join code, and its
+    short student links are just ?game=CODE. Cached (5 min) so a class's reruns don't each
+    download it; a missing config raises, which Streamlit never caches, so a game published
+    a moment later still resolves."""
+    cfg = store.load_game_config(code)
+    if not cfg:
+        raise LookupError(f"no published settings for game {code}")
+    return cfg
+
+
+# ?cfg=… (settings in the link)  →  ?game=CODE (settings from the store)  →  defaults
+CFG, CTX = resolve_config(MANIFEST, fetch=_game_config)
 
 st.markdown("""
 <style>

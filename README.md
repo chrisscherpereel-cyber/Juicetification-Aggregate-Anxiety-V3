@@ -287,6 +287,13 @@ Excel (Windows, Mac, web) is verified. Google Sheets works via *File → Downloa
 Parameters live in [manifest.py](manifest.py) and can be set from the Juicetification Director
 form or by URL: `?cfg=<base64 json>`, `?game=<code>`, `?seed=<int>`, `?manifest=1`.
 
+In the [Juicetification Director](https://github.com/chrisscherpereel-cyber/Juicetification-Director)
+this app is the catalog entry **Aggregate Anxiety V3** (`app3`), deployed at
+`https://juicetification-aggregate-anxiety-v3.streamlit.app`. A Director link either carries the
+settings (`?cfg=…`) or, when the Director's store is on, only the join code (`?game=CODE`): the
+app then reads the settings the Director published to the store for that code (cached for 5
+minutes; an unknown code falls back to the defaults).
+
 | Parameter | Default | Meaning |
 |---|---|---|
 | demand, costs, capacity, inventory | as V2 | the planning data |
