@@ -56,7 +56,15 @@ Nothing about a column is given away before the student finds it:
   Found columns and misses are saved with the student's work; columns already read from an
   upload count as found.
   The panel reads top down, newest first: the latest check, *How they connect*, *Still to
-  find*, then the earlier finds (most recent first) at the bottom.
+  find*, then the earlier finds (most recent first) at the bottom. After each check the page scrolls
+  so the heading box and its reply are in view.
+* **Column order**, once every column is found — judged on the workbook's own order once it
+  has been uploaded with every column, otherwise on the order the headings were checked. If a
+  column comes before a column it uses (e.g. Total Cost before the costs it adds up), the
+  panel names those, recommends an order (with column letters, the way a month happens) and
+  says why it's better: each formula only looks left; a row reads like the month; mistakes
+  flow one way, so fixing the leftmost one fixes the rest. Excel and the checker accept any
+  order.
 * **How they connect** — a diagram of which column feeds which; a column not found yet is a
   **?**, so the picture fills in as the student goes.
 

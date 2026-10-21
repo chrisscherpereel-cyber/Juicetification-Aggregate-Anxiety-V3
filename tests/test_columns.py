@@ -130,3 +130,19 @@ def test_start_here_has_a_printable_column_planner():
     assert ws[f"E{row}"].value == "Hybrid"
     assert ws[f"D{row}"].protection.locked is False           # students can type their heading
     assert ws.row_breaks.brk                                    # prints on its own page
+
+
+def test_order_advice_flags_columns_placed_before_what_they_use():
+    good = columns.order_advice("chase", columns.concepts("chase"))
+    assert good["ok"] and not good["problems"]
+    assert columns.order_advice("chase", L.REQUIRED["chase"])["ok"]       # the usual order
+    bad = columns.order_advice("chase", ["Total Cost"] + [c for c in L.REQUIRED["chase"]
+                                                          if c != "Total Cost"])
+    assert not bad["ok"]
+    assert ("Total Cost", "Labor Cost") in bad["problems"]
+    assert bad["recommended"][0] == "Beginning Inventory" and bad["recommended"][-1] == "Total Cost"
+    # hires before workers: hires uses workers
+    o = ["Hires", "Workers"]
+    assert columns.order_advice("chase", o)["problems"] == [("Hires", "Workers")]
+    # hybrid decisions use nothing, so typing them in any order is fine
+    assert columns.order_advice("hybrid", ["Overtime Production", "Workers"])["ok"]

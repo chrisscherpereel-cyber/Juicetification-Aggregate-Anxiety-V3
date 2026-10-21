@@ -22,6 +22,7 @@ from typing import Dict, List
 
 import altair as alt
 import pandas as pd
+from openpyxl.utils import get_column_letter
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -413,6 +414,17 @@ def scroll_to_top(token: str) -> None:
                       'section.main']){{const e=d.querySelector(s); if(e){{e.scrollTop=0;}}}}
                     window.parent.scrollTo(0,0);}};
       up(); setTimeout(up,100); setTimeout(up,400);}}catch(e){{}}}})();</script>""", height=0)
+
+
+def scroll_to_anchor(anchor: str, token: str) -> None:
+    """Bring an element into view after this rerun (e.g. the reply to a heading check, which
+    the browser otherwise leaves wherever the page happened to end up). `token` must change
+    for every scroll, or Streamlit reuses the same iframe and the script doesn't run again."""
+    components.html(f"""<div style="display:none">{escape(token)}</div><script>(function(){{
+      try{{const d=window.parent.document;
+      const go=()=>{{const e=d.getElementById({anchor!r});
+                     if(e){{e.scrollIntoView({{block:'start', behavior:'instant'}});}}}};
+      go(); setTimeout(go,150); setTimeout(go,500);}}catch(e){{}}}})();</script>""", height=0)
 
 
 def header(key: str) -> None:
@@ -956,6 +968,43 @@ def guided_verdict(scn, ps: dict, res):
     return v
 
 
+def column_order(key: str, res, found: Dict[str, str]) -> None:
+    """Every column is found: is the order sensible? Judge the workbook's order once it has
+    been uploaded with every column, otherwise the order the headings were checked in."""
+    need = [c for c in columns.concepts(key) if not columns.is_optional(key, c)]
+    sheet = [read_as for _, _, read_as in (res.columns if res else [])
+             if read_as in columns.concepts(key)]
+    if all(c in sheet for c in need):
+        order, where = sheet, "in your workbook"
+    else:
+        order, where = list(found), "in the order you checked them"
+    adv = columns.order_advice(key, order)
+    if adv["ok"]:
+        st.success(text.md(f"🎉 **Every column is found**, and your order {where} works: each "
+                           "column comes after the columns it uses. Now build them in Excel."))
+        return
+    late: Dict[str, List[str]] = {}
+    for col, dep in adv["problems"]:
+        late.setdefault(col, []).append(dep)
+    issues = [f"**{col}** comes before {', '.join(deps[:3])}{' …' if len(deps) > 3 else ''} "
+              f"— but it uses {'them' if len(deps) > 1 else 'it'}." for col, deps in late.items()]
+    with st.container(border=True):
+        st.markdown(text.md(f"🎉 **Every column is found.** One thing before you build: "
+                            f"{where}, some columns come before columns they use."))
+        st.markdown(text.md("\n".join(f"- {i}" for i in issues[:4])
+                            + (f"\n- … and {len(issues) - 4} more" if len(issues) > 4 else "")))
+        st.markdown("**A better order**, the way a month happens:")
+        st.markdown("  ·  ".join(f"**{get_column_letter(L.FIRST_STUDENT_COL + i)}** {escape(h)}"
+                                 for i, h in enumerate(adv["recommended"])))
+        st.markdown("**Why it's better**\n\n" + "\n".join(f"- {text.md(w)}"
+                                                          for w in columns.ORDER_WHY))
+        st.caption("Excel calculates either way, and the checker accepts any order. This is "
+                   "about building, reading and fixing your plan."
+                   + (" Not the order you'll use? Once you upload your workbook, its own "
+                      "column order is checked instead." if where.startswith("in the order you")
+                      else ""))
+
+
 def design_columns(key: str, scn) -> None:
     """Find the plan's columns one heading at a time. A column's name and why it matters are
     shown only once the student has found it; misses get a little more help each time."""
@@ -972,6 +1021,7 @@ def design_columns(key: str, scn) -> None:
              "time** — a good one is ticked off and tells you why that column matters.")
     progress = st.empty()                    # filled in after this run's check (below)
 
+    st.markdown(f"<div id='aa-headcheck-{key}'></div>", unsafe_allow_html=True)
     with st.form(f"headform_{key}", clear_on_submit=True, border=False):
         c1, c2 = st.columns([4, 1], vertical_alignment="bottom")
         typed = c1.text_input("Check one heading", placeholder="Type a heading you plan to use")
@@ -984,7 +1034,9 @@ def design_columns(key: str, scn) -> None:
             ps["head_misses"] = ps.get("head_misses", 0) + 1
         r.update(heading=typed.strip(), misses=ps.get("head_misses", 0))
         SS[f"headres_{key}"] = r
+        SS["_headchecks"] = SS.get("_headchecks", 0) + 1
         save_state("headcheck")
+        scroll_to_anchor(f"aa-headcheck-{key}", f"{key}-{SS['_headchecks']}")
     need = [c for c in columns.concepts(key) if not columns.is_optional(key, c)]
     done = sum(c in found for c in need)
     progress.progress(done / len(need), text=f"{done} of {len(need)} columns found")
@@ -1014,6 +1066,8 @@ def design_columns(key: str, scn) -> None:
             if r["misses"] >= 2 and oq:
                 st.caption(text.md(f"Try this one: *{oq[0][1][0][0]}*"))
 
+    if done == len(need):
+        column_order(key, res, found)
     # newest first: the latest check is above; then how they connect, what is still open,
     # and the earlier finds (most recent first) at the bottom
     with st.expander("How they connect"):
@@ -1027,8 +1081,6 @@ def design_columns(key: str, scn) -> None:
         blocks = [f"*{title}*\n\n" + "\n".join(f"- {q}" + (f" *({tag})*" if tag else "")
                                                 for q, tag in qs) for title, qs in oq]
         st.markdown(text.md("\n\n".join(blocks)))
-    else:
-        st.success("Every column is found. Now build them in Excel.")
     if found:
         info = {c.concept: c for _, _, cols in columns.stages(key, scn.whole_workers)
                 for c in cols}

@@ -246,6 +246,33 @@ def check_one(kind: str, heading: str, found: Dict[str, str]) -> dict:
             "optional": is_optional(kind, c), "decision": is_decision(kind, c)}
 
 
+ORDER_WHY = [
+    "**Each formula only looks left.** Every column comes after the columns it uses, so "
+    "you build and check them in one pass, left to right.",
+    "**A row reads like the month.** What you start with → what you decide → what happens "
+    "→ what it costs.",
+    "**Mistakes flow one way.** When a cell is wrong, the cells to its right that use it are "
+    "wrong too (↪ in the feedback). Fix the leftmost one first and the rest correct "
+    "themselves.",
+]
+
+
+def order_advice(kind: str, order: Sequence[str]) -> dict:
+    """Is the student's column order (concepts, left to right) one where every column comes
+    after the columns it uses? {"ok", "recommended": [heading ideas], "problems":
+    [(column, a column it uses that comes later)]}. Excel doesn't care about the order;
+    this is about building, reading and fixing the plan."""
+    order = [c for c in order if c in concepts(kind)]
+    pos = {c: i for i, c in enumerate(order)}
+    problems = []
+    for c in order:
+        for dep in inputs(kind, c):
+            if dep in pos and pos[dep] > pos[c]:
+                problems.append((heading_idea(kind, c), heading_idea(kind, dep)))
+    return {"ok": not problems, "problems": problems,
+            "recommended": [heading_idea(kind, c) for c in concepts(kind) if c in pos]}
+
+
 def open_questions(kind: str, found: Dict[str, str]) -> List[Tuple[str, List[Tuple[str, str]]]]:
     """[(stage title, [(question, tag)])] still to find, in month order; tag is "new" (new in
     the hybrid), "optional" or ""."""

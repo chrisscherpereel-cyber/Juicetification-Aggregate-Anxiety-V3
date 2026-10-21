@@ -75,3 +75,31 @@ def test_newest_find_first_and_diagram_above_the_lists():
     assert still < so_far                                     # older finds at the bottom
     labels = [e.label for e in at.expander]
     assert "How they connect" in labels
+
+
+CHASE_HEADINGS = ["Starting Stock", "Backlog at start", "Production", "Crew", "Hired", "Fired",
+                  "Closing Stock", "Ending Backorders", "Wages", "Hiring Cost", "Layoff Cost",
+                  "Holding Cost", "Backorder Cost", "Total Cost"]
+
+
+def test_check_scrolls_the_reply_into_view():
+    at = check(chase_page(), "Starting Stock")
+    html = " ".join(str(e.proto) for e in at.get("iframe"))
+    assert "aa-headcheck-chase" in html and "scrollIntoView" in html
+
+
+def test_all_found_in_a_good_order_says_so():
+    at = chase_page()
+    for h in CHASE_HEADINGS:
+        at = check(at, h)
+    assert any("Every column is found" in s.value and "works" in s.value for s in at.success)
+
+
+def test_all_found_in_a_poor_order_gets_a_recommended_order_and_why():
+    at = chase_page()
+    for h in ["Total Cost"] + CHASE_HEADINGS[:-1]:
+        at = check(at, h)
+    body = " ".join(m.value for m in at.markdown)
+    assert "Every column is found" in body and "**Total Cost** comes before" in body
+    assert "A better order" in body and "**C** Beginning Inventory" in body
+    assert "Why it's better" in body and "Mistakes flow one way" in body
