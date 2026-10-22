@@ -255,7 +255,7 @@ PLANNING: Dict[str, List[str]] = {
     ],
     "target": [
         "How much stock should be left at the end?",
-        "It depends on your company's inventory policy (see the Start Here and Scenario sheets).",
+        "It depends on your company's inventory policy (see the Scenario sheet).",
         "There is a name on the Scenario sheet for exactly this.",
         "Ending inventory target = EndTarget.",
     ],

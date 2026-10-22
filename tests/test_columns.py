@@ -1,5 +1,5 @@
 """Help with designing the columns: the planner, what's new per plan, the heading check, the
-diagram and the printable planner on the Start Here sheet."""
+diagram."""
 
 import io
 
@@ -112,24 +112,11 @@ def test_diagram_hides_columns_not_found_yet():
     assert '"Hires" [fillcolor="#FFFFFF", label="?"' in dot
 
 
-def test_start_here_has_a_printable_column_planner():
+def test_start_here_has_no_column_planner():
     ws = load_workbook(io.BytesIO(workbook.build_workbook(scn7(), student_name="x",
                                                           student_id=SID)))[L.SHEET_START]
-    cells = {c.coordinate: c for row in ws.iter_rows() for c in row if c.value is not None}
-    head = next(c for c in cells.values() if c.value == "My heading")
-    r = head.row
-    assert [ws[f"{x}{r}"].value for x in "BCDE"] == ["#", "Question it answers", "My heading",
-                                                       "Needed in"]
-    text_below = " ".join(str(ws[f"{x}{k}"].value) for k in range(r + 1, r + 30)
-                          for x in "BCE" if ws[f"{x}{k}"].value is not None)
-    assert "How many bottles did you make on overtime?" in text_below
-    for name in ("Beginning Inventory", "Ending Backorders", "Labor Cost"):
-        assert name not in text_below                         # questions, not answers
-    row = next(k for k in range(r + 1, r + 30)
-               if ws[f"C{k}"].value == "How many bottles did you make on overtime?")
-    assert ws[f"E{row}"].value == "Hybrid"
-    assert ws[f"D{row}"].protection.locked is False           # students can type their heading
-    assert ws.row_breaks.brk                                    # prints on its own page
+    values = [c.value for row in ws.iter_rows() for c in row if c.value is not None]
+    assert "My heading" not in values and not ws.row_breaks.brk
 
 
 def test_order_advice_flags_columns_placed_before_what_they_use():

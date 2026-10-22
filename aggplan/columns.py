@@ -1,6 +1,6 @@
 """Help with DESIGNING the columns: which ones a plan needs, why, what each is calculated from
-and what uses it. One source for the app's column planner, the "how they connect" diagram,
-the heading check and the printable planner on the workbook's Start Here sheet.
+and what uses it. One source for the app's column planner, the "how they connect" diagram
+and the heading check.
 
 It explains the business logic, never a formula: "comes from" names the ingredients (the
 level of hint 1-2), and the formula itself stays with the hint ladder (hints.py)."""

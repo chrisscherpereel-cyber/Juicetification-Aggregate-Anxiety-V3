@@ -56,12 +56,15 @@ def test_policies_are_stated_for_every_option():
     assert "fractional" in text.policies(scn7(**POLICY_CFG))[2][0]
 
 
-def test_policies_appear_on_scenario_and_start_sheets():
+def test_policies_are_on_the_scenario_sheet_only():
     wb = load_workbook(io.BytesIO(workbook.build_workbook(scn7(**POLICY_CFG), student_id=SID)))
-    for sheet in (L.SHEET_SCENARIO, L.SHEET_START):
-        cells = " ".join(str(c.value) for row in wb[sheet].iter_rows() for c in row if c.value)
-        assert "Safety stock: KEEP" in cells and "fractional workers allowed" in cells
-        assert "BeginBackorders" in cells
+    def cells(sheet):
+        return " ".join(str(c.value) for row in wb[sheet].iter_rows() for c in row if c.value)
+    scenario = cells(L.SHEET_SCENARIO)
+    assert "Safety stock: KEEP" in scenario and "fractional workers allowed" in scenario
+    assert "BeginBackorders" in scenario
+    start = cells(L.SHEET_START)                               # pointed to, not repeated
+    assert "Safety stock: KEEP" not in start and "on the Scenario sheet" in start
 
 
 def test_hints_follow_the_worker_policy():

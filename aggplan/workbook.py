@@ -30,7 +30,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from . import MODEL_VERSION, columns, hints, layout as L, text
+from . import MODEL_VERSION, hints, layout as L, text
 from .engine import Decision, reference_plan
 from .scenario import Scenario
 
@@ -178,63 +178,13 @@ def _start_sheet(wb, scn: Scenario, name: str, sid: str):
         _put(ws, f"C{k}", label)
     r = r + len(legend) + 2
 
-    _put(ws, f"B{r}", "Your company's planning policies (every plan must follow them)", font=H2)
-    r += 1
-    for title, summary, details in text.policies(scn):
-        _put(ws, f"B{r}", title, font=BOLD, wrap=True)
-        for line in [summary] + details:
-            _put(ws, f"C{r}", f"• {line}", wrap=True)
-            ws.merge_cells(f"C{r}:D{r}")
-            ws.row_dimensions[r].height = 15 * (1 + len(line) // 110)
-            r += 1
-        r += 1
-    r += 1
-    r = _column_planner(ws, scn, r)
-    _put(ws, f"B{r}", "Stuck on Excel itself? See the Excel Help sheet.", font=NOTE)
+    _put(ws, f"B{r}", "Your company's planning policies (safety stock, backorders, workers) "
+                      "are on the Scenario sheet — every plan must follow them.", font=BOLD)
+    _put(ws, f"B{r + 1}", "Stuck on Excel itself? See the Excel Help sheet.", font=NOTE)
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     _protect(ws)
-
-
-def _column_planner(ws, scn: Scenario, r: int) -> int:
-    """A printable planner: the questions every plan must answer, in the order a month
-    happens, with a cell for the student's own heading. It gives the questions, not the
-    columns — the app's heading check confirms each heading and says why it matters."""
-    from openpyxl.worksheet.pagebreak import Break
-    kinds = _pieces(scn)
-    ws.row_breaks.append(Break(id=r - 1))           # prints on a page of its own
-    _put(ws, f"B{r}", "Column planner — fill in your headings before you build", font=H2)
-    _put(ws, f"B{r + 1}", "Each question becomes one column of your plan. Write the heading "
-                          "you'll use, then check it in the app (① Design your columns ▸ "
-                          "Check one heading). The level plan needs the same columns as the "
-                          "chase plan.", font=NOTE, wrap=True)
-    ws.merge_cells(f"B{r + 1}:E{r + 1}")
-    ws.row_dimensions[r + 1].height = 30
-    r += 2
-    for j, h in enumerate(["#", "Question it answers", "My heading", "Needed in"]):
-        _put(ws, f"{'BCDE'[j]}{r}", h, font=HEAD_FONT, fill=HEAD_FILL, border=True,
-             align=CENTER)
-    ws.column_dimensions["E"].width = 14
-    stage_rows = columns.stages("hybrid" if "hybrid" in kinds else "chase", scn.whole_workers)
-    n = 0
-    for k, (title, _, cols) in enumerate(stage_rows, 1):
-        r += 1
-        _put(ws, f"B{r}", f"{k}. {title}", font=BOLD, fill=NA_FILL, border=True)
-        ws.merge_cells(f"B{r}:E{r}")
-        for c in cols:
-            r += 1
-            n += 1
-            need = [L.PLAN_LABEL[kd] for kd in kinds if c.concept in columns.concepts(kd)]
-            label = "all plans" if len(need) == len(kinds) else ", ".join(need)
-            if c.optional:
-                label = "optional"
-            _put(ws, f"B{r}", n, border=True, align=CENTER)
-            _put(ws, f"C{r}", c.question, border=True, wrap=True)
-            _input(ws, f"D{r}").border = BOX
-            _put(ws, f"E{r}", label, border=True, wrap=True, align=CENTER)
-            ws.row_dimensions[r].height = 24
-    return r + 2
 
 
 def _scenario_sheet(wb, scn: Scenario):

@@ -69,9 +69,6 @@ Nothing about a column is given away before the student finds it:
 * **How they connect** — a diagram of which column feeds which; a column not found yet is a
   **?**, so the picture fills in as the student goes.
 
-The workbook's **Start Here** sheet has the questions as a printable table (on its own page) —
-question, *My heading* to fill in, and which plans need it — without the answers.
-
 The checker reads the student's headings ([aggplan/recognize.py](aggplan/recognize.py)), so
 **any order and any clear wording works**: "Starting Stock", "Beg Inv" and "Opening inventory"
 are all Beginning Inventory; "Crew", "Fired", "Wages", "Shortage Penalty" are Workers, Layoffs,
@@ -153,7 +150,7 @@ hybrid default (`include_hybrid=false` removes the hybrid option altogether).
 
 ## Planning policies (stated to students)
 
-The Scenario sheet, the Start Here sheet and step 1 of the app spell out the company's policies
+The Scenario sheet and step 1 of the app spell out the company's policies
 as business rules, not formulas:
 
 * **Safety stock** — either *none* (EndTarget = 0: the chase plan uses up the beginning stock
