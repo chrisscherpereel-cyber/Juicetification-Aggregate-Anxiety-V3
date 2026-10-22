@@ -477,6 +477,22 @@ with st.sidebar:
                  "it and the next one opens.")
 
 
+def upload_copy_help() -> None:
+    """Workaround for 'file is in use' when the workbook is still open in Excel."""
+    with st.expander("Workbook still open in Excel? Upload a copy instead"):
+        st.markdown("Excel locks a workbook while it's open, so the browser can't read it "
+                    "(*\"This file is in use\"* or *Network Error*). Either close the workbook "
+                    "first, or set up a one-click button that saves a copy to your "
+                    "**Downloads** folder while the original stays open.")
+        st.markdown("**One-time setup (Excel for Windows):**")
+        st.markdown("\n".join(f"{i}. {s}" for i, s in enumerate(text.UPLOAD_COPY_STEPS, 1)))
+        st.code(text.UPLOAD_COPY_MACRO, language="vbnet")
+        st.markdown("**Each time you upload:** click the button, then upload "
+                    "`<your file>_UPLOAD.xlsx` from **Downloads**. The copy includes unsaved "
+                    "changes and is replaced each time. Excel in a browser can't run macros: "
+                    "use **File → Save As → Download a Copy** instead.")
+
+
 def scroll_to_top(token: str) -> None:
     """Streamlit keeps the scroll position across reruns; a new step should start at the top."""
     if SS.get("_scrolled_for") == token:
@@ -960,6 +976,7 @@ def guided_hybrid(scn, ps: dict) -> bool:
              "replaced; other sheets are untouched.")
     seed = st.file_uploader("Workbook to add the starting plan to (.xlsx)", type=["xlsx"],
                             key="hyb_seed")
+    upload_copy_help()
     if seed is not None:
         data = seed.getvalue()
         sig = (hashlib.sha256(data).hexdigest(), start, scn.config_hash)
@@ -1411,6 +1428,7 @@ def page_piece(key: str) -> None:
     st.write("Save your workbook in Excel, then upload it here. Only the "
              f"**{checker.PIECE_TITLES[key].lower()}** is checked at this step.")
     up = st.file_uploader("Your workbook (.xlsx)", type=["xlsx"], key=f"up_{key}")
+    upload_copy_help()
     if up is not None:
         run_check(key, up)
     res = SS["results"].get(key)

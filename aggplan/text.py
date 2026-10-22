@@ -194,3 +194,27 @@ EXCEL_ERRORS = [
                            "Circular References) and break the loop. On the hybrid sheet, type "
                            "your decisions as numbers."),
 ]
+
+
+# Excel locks an open workbook, so the browser can't read it for upload. This macro saves a
+# copy to Downloads while the original stays open (works for local and OneDrive files alike).
+UPLOAD_COPY_MACRO = '''Sub SaveUploadCopy()
+    Dim wb As Workbook, base As String, target As String
+    Set wb = ActiveWorkbook
+    base = Left(wb.Name, InStrRev(wb.Name, ".") - 1)
+    target = Environ("USERPROFILE") & "\\Downloads\\" & base & "_UPLOAD.xlsx"
+    wb.SaveCopyAs target
+    MsgBox "Upload copy saved:" & vbCrLf & target, vbInformation
+End Sub'''
+
+UPLOAD_COPY_STEPS = [
+    "In Excel, press **Alt+F11** to open the macro editor.",
+    "In the left panel, find **VBAProject (PERSONAL.XLSB)**. If it isn't there: close the "
+    "editor, choose **View → Macros → Record Macro**, set *Store macro in* to **Personal "
+    "Macro Workbook**, click OK, then **Stop Recording** right away. Press Alt+F11 again.",
+    "Right-click **VBAProject (PERSONAL.XLSB)**, choose **Insert → Module**, and paste the "
+    "macro below.",
+    "Close the editor. In **File → Options → Quick Access Toolbar**, set *Choose commands "
+    "from* to **Macros**, add **SaveUploadCopy**, and click OK.",
+    "When you next close Excel and it asks to save the Personal Macro Workbook, click **Yes**.",
+]
