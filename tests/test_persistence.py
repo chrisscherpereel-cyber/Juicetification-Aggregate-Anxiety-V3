@@ -84,8 +84,13 @@ def do_some_work(at):
 
 
 def click(at, label):
+    at = at.run()                       # redraw the sidebar so locks match the current progress
     next(b for b in at.sidebar.button if label in b.label).click()
     return at.run()
+
+
+def locked(at, label):
+    return next(b for b in at.sidebar.button if label in b.label).disabled
 
 
 # --------------------------------------------------------------------------------------
@@ -99,9 +104,10 @@ def test_moving_between_screens_keeps_everything():
     at.session_state["results"]["level"] = feedback
     at = at.run()
     for label in ("Level plan", "Chase plan", "Final report", "Scenario & workbook",
-                  "Hybrid plan", "Level plan"):
+                  "Level plan"):
         at = click(at, label)
         assert not at.exception
+    assert locked(at, "Hybrid plan")                # level not submitted yet
     assert dict(at.session_state["pieces"]) == before
     assert at.session_state["results"]["level"] is feedback
     assert at.session_state["last_wb"]["name"] == "wb.xlsx"
