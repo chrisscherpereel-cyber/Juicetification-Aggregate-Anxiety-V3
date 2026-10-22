@@ -114,17 +114,20 @@ def test_workbook_is_offered_with_the_headings_once_every_chase_column_is_found(
     from openpyxl import load_workbook
     at = chase_page()
     assert "Download the workbook anyway (no headings)" in download_labels(at)
-    assert not any("with my headings" in d for d in download_labels(at))
+    assert not any("with the headings" in d for d in download_labels(at))
     for h in ["Total Cost"] + CHASE_HEADINGS[:-1]:            # found in a poor order
         at = check(at, h)
-    assert any("with my headings" in d for d in download_labels(at))
+    assert any("with the headings" in d for d in download_labels(at))
     assert "Download the workbook anyway (no headings)" not in download_labels(at)
     data = at.session_state["wb_head_bytes"]
     wb = load_workbook(io.BytesIO(data))
-    for sheet in ("Chase Plan", "Level Plan"):               # recommended order, own wording
+    for sheet in ("Chase Plan", "Level Plan"):               # recommended order, standard names
         row1 = [wb[sheet].cell(1, j).value for j in range(3, 17)]
-        assert row1[0] == "Starting Stock" and row1[-1] == "Total Cost", (sheet, row1)
-        assert row1[3] == "Crew" and row1[8] == "Wages"
+        assert row1[0] == "Beginning Inventory" and row1[-1] == "Total Cost", (sheet, row1)
+        assert row1[3] == "Workers" and row1[8] == "Labor Cost"
+    why = next(e for e in at.expander if e.label == "Why the workbook uses standard headings")
+    body = " ".join(m.value for m in why.markdown)
+    assert "standard terms" in body and "| Starting Stock | Beginning Inventory |" in body
     assert wb["Chase Plan"]["C2"].value is None                # no formulas given
 
 
@@ -138,7 +141,7 @@ def test_level_panel_starts_with_the_chase_columns_found():
     at = at.run()
     assert not at.exception
     assert "14 of 14 columns found" in str(at.get("progress")[0].proto)
-    assert not any("with my headings" in d for d in download_labels(at))   # chase only
+    assert not any("with the headings" in d for d in download_labels(at))   # chase only
 
 
 def test_downloading_early_is_noted_in_the_report():

@@ -678,7 +678,7 @@ def page_start() -> None:
         else:
             st.info("**Your workbook comes after your columns.** On the **Chase plan** step, "
                     "work out which columns your plan needs and check each heading. Then "
-                    "download the workbook — with your headings already in row 1.")
+                    "download the workbook — with the headings already in row 1.")
         st.markdown("**You'll submit it in pieces:**")
         st.markdown("\n".join(f"{i}. **{checker.PIECE_TITLES[k]}** — {GOALS[k].split('.')[0]}."
                               for i, k in enumerate(PIECES, start=1)))
@@ -1075,11 +1075,25 @@ def chase_columns_done() -> bool:
 
 
 def workbook_headings() -> Dict[str, List[str]]:
-    """The student's chase headings in the recommended (month) order, for row 1 of the Chase
-    and Level sheets — the level plan needs the same columns."""
+    """Standard headings for the student's chase columns, in the recommended (month) order,
+    for row 1 of the Chase and Level sheets — the level plan needs the same columns."""
     f = found_columns("chase")
-    heads = [f[c] for c in columns.concepts("chase") if c in f]
+    heads = [columns.heading_idea("chase", c) for c in columns.concepts("chase") if c in f]
     return {"chase": heads, "level": heads}
+
+
+def heading_why(found: Dict[str, str]) -> None:
+    """What the workbook renamed, and why the standard headings are the better choice."""
+    changes = columns.heading_changes("chase", found)
+    with st.expander("Why the workbook uses standard headings"):
+        if changes:
+            st.markdown("Your columns are all there, in the recommended order, under the "
+                        "standard name for each:")
+            md_table(pd.DataFrame(changes, columns=["Your heading", "In the workbook"]))
+        else:
+            st.markdown("Your headings already match the standard names. Nice work.")
+        st.markdown("**Why these headings are better:**\n\n"
+                    + "\n".join(f"- {w}" for w in columns.HEADING_WHY))
 
 
 def workbook_bytes(scn, headings=None) -> bytes:
@@ -1227,11 +1241,13 @@ def design_columns(key: str, scn) -> None:
         if key == "chase":
             st.markdown("#### ② Get your workbook")
             policy_warning(scn)
-            download_workbook(scn, "chase", label="⬇ Download my workbook (with my headings)",
+            download_workbook(scn, "chase", label="⬇ Download my workbook (with the headings)",
                               headings=workbook_headings())
-            st.caption("Row 1 of the **Chase Plan** and **Level Plan** sheets already holds your "
-                       "headings, in the recommended order. Write the formulas below them — and "
-                       "keep working in this one file for every piece.")
+            st.caption("Row 1 of the **Chase Plan** and **Level Plan** sheets already holds a "
+                       "heading for each of your columns, in the recommended order, using the "
+                       "standard names. Write the formulas below them — and keep working in "
+                       "this one file for every piece.")
+            heading_why(found)
     # newest first: the latest check is above; then how they connect, what is still open,
     # and the earlier finds (most recent first) at the bottom
     with st.expander("How they connect"):
@@ -1256,7 +1272,7 @@ def design_columns(key: str, scn) -> None:
                 st.caption(text.md(c.why))
     if key == "chase" and done < len(need) and not SS.get("downloaded_hash"):
         with st.expander("Need the workbook now?"):
-            st.caption("Your workbook comes once every column is found, with your headings "
+            st.caption("Your workbook comes once every column is found, with the headings "
                        "already in it. Already know the columns, or need the file now?")
             download_workbook(scn, "chase_skip",
                               label="Download the workbook anyway (no headings)",

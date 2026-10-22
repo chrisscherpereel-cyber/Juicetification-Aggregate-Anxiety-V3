@@ -257,6 +257,27 @@ ORDER_WHY = [
 ]
 
 
+HEADING_WHY = [
+    "**They're the standard terms.** Operations-management textbooks, lectures and exams use "
+    "these names, so your sheet reads the same to you, your classmates and your instructor.",
+    "**Each one says what *and* when.** “Beginning Inventory” and “Ending Inventory” can't be "
+    "mixed up; “Stock” or “Backlog” on its own could mean either end of the month.",
+    "**Each cost names what it prices.** Hires → Hiring Cost, Ending Inventory → Holding Cost, "
+    "Ending Backorders → Backorder Cost: you can see which column each cost multiplies.",
+    "**They match the app.** The hints, the column guide and the “How they connect” diagram "
+    "use these names, so what the app describes is the heading you see in your sheet.",
+    "**They carry through every plan.** The level and hybrid plans use the same names, so the "
+    "columns line up across the sheets you build.",
+]
+
+
+def heading_changes(kind: str, found: Dict[str, str]) -> List[Tuple[str, str]]:
+    """[(the student's heading, the standard heading)] where the wording differs, in working
+    order — for showing what the workbook renamed."""
+    return [(found[c], heading_idea(kind, c)) for c in concepts(kind)
+            if c in found and found[c].strip().lower() != heading_idea(kind, c).lower()]
+
+
 def order_advice(kind: str, order: Sequence[str]) -> dict:
     """Is the student's column order (concepts, left to right) one where every column comes
     after the columns it uses? {"ok", "recommended": [heading ideas], "problems":
