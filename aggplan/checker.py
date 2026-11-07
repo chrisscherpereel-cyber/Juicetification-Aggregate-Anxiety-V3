@@ -6,9 +6,15 @@ formulas the student typed and once for the values Excel calculated and saved. O
 sheet it first works out which column is which from the student's own headings
 (recognize.py), then grades every month of every recognised column.
 
+Two checking modes (scenario parameter `require_formulas`, default off):
+  values only     (default) only the numbers Excel saved are judged; a right number is right
+                  however it got there
+  values+formulas a right number must also come from a formula, and that formula must use
+                  the right columns (not a column the item doesn't depend on, nor leave one out)
+
 Cell statuses:
-  ok        right value, calculated by a formula
-  typed     right value, but typed in as a number (when formulas are required)
+  ok        right value (and, when formulas are checked, calculated by a formula)
+  typed     right value, but typed in as a number (only when formulas are checked)
   carried   the cell follows the rule, but an earlier cell it uses is wrong
   wrong     the value is wrong
   blank     nothing there yet
@@ -62,10 +68,17 @@ STATUS_HELP = {
     "blank": "Still to do.",
     "error": "Excel could not calculate this cell. See 'What an error means' on the Excel "
              "Help sheet.",
-    "text": "This cell holds text. Enter a formula that starts with =.",
+    "text": "This cell holds text. Enter a number, or a formula that starts with =.",
     "uncalc": "The formula has no saved result. Open the file in Excel, save it as .xlsx and "
               "upload again.",
 }
+
+
+def formulas_required(scn: Scenario) -> bool:
+    """True when the formulas are checked as well as the values (off by default)."""
+    return bool(scn.params.get("require_formulas", False))
+
+
 PIECE_TITLES = {"chase": "Chase plan", "level": "Level plan", "hybrid": "Hybrid plan",
                 "summary": "Compare & recommend"}
 _ERR_RE = re.compile(r"^#(DIV/0!|NAME\?|REF!|VALUE!|N/A|NUM!|NULL!|SPILL!|CALC!)")
@@ -793,7 +806,7 @@ def _judge_decision(cell: Cell, concept: str) -> str:
 
 def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
     sheet = L.PLAN_SHEETS[kind]
-    require = bool(scn.params.get("require_formulas", True))
+    require = formulas_required(scn)
     pr = read_plan(book, scn, kind)
     cm = pr.cm
     for letter, heading in cm.headings.items():
@@ -858,14 +871,14 @@ def _grade_plan(book: Book, scn: Scenario, kind: str, res: PieceResult) -> None:
                 diag = (_diag(kind, concept, i, cell, pr.values, pv, scn)
                         if st in ("wrong", "error") else "")
                 bad = (wrong_column_refs(kind, concept, cell.formula, L.month_row(i), concept_of)
-                       if st in ("ok", "carried") and cell.formula else [])
+                       if require and st in ("ok", "carried") and cell.formula else [])
                 if bad:
                     ref0, other = bad[0]
                     st = "wrong"
                     diag = (f"The number happens to fit, but this formula uses {ref0} "
                             f"({other}), which {concept} doesn't depend on. Check which "
                             "column it should point at.")
-                elif st in ("ok", "carried") and cell.formula:
+                elif require and st in ("ok", "carried") and cell.formula:
                     miss = missing_inputs(kind, concept, cell.formula, L.month_row(i),
                                           cm.by_concept)
                     if miss and kind == "chase":
@@ -941,7 +954,7 @@ def _student_metric(pr: PlanRead, book: Book, kind: str, metric: str) -> Optiona
 
 def _grade_summary(book: Book, scn: Scenario, res: PieceResult) -> None:
     sheet = L.SHEET_SUMMARY
-    require = bool(scn.params.get("require_formulas", True))
+    require = formulas_required(scn)
     kinds = ["chase", "level"] + (["hybrid"] if scn.params.get("include_hybrid", True) else [])
     reads = {k: read_plan(book, scn, k) for k in kinds}
     keys = {}
@@ -982,7 +995,7 @@ def _grade_summary(book: Book, scn: Scenario, res: PieceResult) -> None:
     else:
         got = str(cell.value).strip().lower()
         refs = formula_refs(cell.formula, sheet) if cell.formula else []
-        uses_totals = (cell.formula is None or any(r == tc and c in (2, 3) for c, r in refs)
+        uses_totals = (not require or cell.formula is None or any(r == tc and c in (2, 3) for c, r in refs)
                        or bool(_OTHER_SHEET_RE.search(cell.formula.upper())))   # plan totals
         if _ERR_RE.match(got.upper()):
             st = "error"

@@ -63,21 +63,23 @@ def test_switches_live_in_the_sidebar_with_defaults():
     next(b for b in at.button if b.label == "Start").click()
     at = at.run()
     radios = {r.label: r for r in at.sidebar.radio}
-    assert list(radios) == ["Safety stock", "Workforce", "Hybrid plan"]
-    assert (radios["Safety stock"].value, radios["Workforce"].value,
-            radios["Hybrid plan"].value) == ("none", "whole", "guided")
+    assert list(radios) == ["Safety stock", "Workforce", "Checking", "Hybrid plan"]
+    assert (radios["Safety stock"].value, radios["Workforce"].value, radios["Checking"].value,
+            radios["Hybrid plan"].value) == ("none", "whole", "values", "guided")
     assert not at.main.radio                                # nothing on step 1 any more
     radios["Safety stock"].set_value("maintain")
     radios["Workforce"].set_value("partial")
+    radios["Checking"].set_value("formulas")
     at = at.run()
     assert at.session_state["policy"] == {"safety_stock_policy": "maintain",
-                                          "worker_policy": "partial"}
+                                          "worker_policy": "partial", "require_formulas": True}
     assert not at.exception
     at.session_state["pieces"]["chase"]["submitted"] = {"at": "now", "sha": "x", "file": "f",
                                                         "metrics": {}, "feasibility": []}
     at = at.run()
     radios = {r.label: r for r in at.sidebar.radio}
     assert radios["Safety stock"].disabled and radios["Workforce"].disabled
+    assert radios["Checking"].disabled              # every piece is checked the same way
     assert not radios["Hybrid plan"].disabled
 
 

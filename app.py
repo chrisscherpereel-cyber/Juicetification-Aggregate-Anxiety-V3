@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import re
 from html import escape
 from typing import Dict, List
 
@@ -75,6 +76,15 @@ st.markdown("""
   .aa-grid tbody th {text-align: left; font-weight: 600; white-space: nowrap;}
   .aa-grid td {text-align: center; color: #222; min-width: 1.7rem; cursor: default;}
   .aa-hint {border-left: 4px solid #1F3864; padding: .1rem 0 .1rem .8rem; margin: .2rem 0 .9rem 0;}
+  .aa-stages {display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; margin: .3rem 0 .7rem 0;}
+  .aa-stage {padding: .2rem .65rem; border-radius: 999px; font-size: .85rem;
+             border: 1px solid rgba(128,128,128,.4); white-space: nowrap;}
+  .aa-stage.done {background: #C6EFCE; color: #1E5631; border-color: #9BD3A8;}
+  .aa-stage.now {background: #1F3864; color: #fff; font-weight: 600; border-color: #1F3864;}
+  .aa-stage.todo {opacity: .55;}
+  .aa-arrow {opacity: .45;}
+  .aa-next {border-left: 4px solid #F28C28; background: rgba(242,140,40,.09); padding: .6rem .9rem;
+            border-radius: 6px; margin-bottom: .9rem;}
   .aa-hint .lvl {font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; opacity: .7;}
 </style>""", unsafe_allow_html=True)
 
@@ -136,10 +146,21 @@ def seed_for(sid: str, restarts: int = None) -> int:
     return store.derive_seed(GAME, sid if not n else f"{sid}#restart{n}", lo=1, hi=10 ** 6)
 
 
-POLICY_KEYS = ("safety_stock_policy", "worker_policy")
+POLICY_KEYS = ("safety_stock_policy", "worker_policy", "require_formulas")
 STUDENT_SETS_POLICIES = bool(CFG.get("student_sets_policies", True))
-SS.setdefault("policy", {"safety_stock_policy": CFG.get("safety_stock_policy") or "none",
-                         "worker_policy": CFG.get("worker_policy") or "whole"})
+
+
+def default_policy() -> dict:
+    """The instructor's starting values for the student's switches. `require_formulas`: check
+    the formulas as well as the values (off = values only)."""
+    return {"safety_stock_policy": CFG.get("safety_stock_policy") or "none",
+            "worker_policy": CFG.get("worker_policy") or "whole",
+            "require_formulas": bool(CFG.get("require_formulas", False))}
+
+
+SS.setdefault("policy", default_policy())
+for _k, _v in default_policy().items():          # sessions/saves from before a switch existed
+    SS["policy"].setdefault(_k, _v)
 SS.setdefault("hybrid_mode", CFG.get("hybrid_mode") or "guided")
 
 # The hybrid plan is a piece only when the instructor allows it and the student hasn't
@@ -308,13 +329,31 @@ def _set_policy(key: str, widget: str) -> None:
     save_state("settings")
 
 
+def formulas_checked() -> bool:
+    scn = scenario()
+    return checker.formulas_required(scn) if scn else bool(policy_cfg().get("require_formulas"))
+
+
+def _set_checking() -> None:
+    """Values only ↔ values and formulas. The latest feedback is rebuilt under the new rule."""
+    SS["policy"]["require_formulas"] = SS["set_check"] == "formulas"
+    data = persistence.workbook_bytes(SS.get("last_wb"))
+    scn = scenario()
+    for k in list(SS["results"]):
+        if data and scn and not submitted(k):
+            SS["results"][k] = checker.check_piece(data, scn, k, expected_sid=SS["student"]["sid"])
+        else:
+            SS["results"].pop(k, None)
+    save_state("settings")
+
+
 def _set_hybrid_mode() -> None:
     SS["hybrid_mode"] = SS["set_hybrid"]
     save_state("settings")
 
 
 def sidebar_settings() -> None:
-    """Three switches: safety stock, workforce, and how the hybrid plan is done."""
+    """Four switches: safety stock, workforce, what is checked, and how the hybrid is done."""
     st.markdown("**Settings**")
     locked = policies_locked()
     ss_val = f"{float(CFG.get('safety_stock') or 0):,.0f}"
@@ -333,6 +372,16 @@ def sidebar_settings() -> None:
              args=("worker_policy", "set_wk"),
              help="Whole: a need of 10.2 workers means employing 11 (the idle capacity is paid). "
                   "Fractional: capacity grows in small increments, such as part-time hours.")
+    chk_opts = {"values": "Values only — the numbers in the cells",
+                "formulas": "Values and formulas"}
+    chk_now = "formulas" if (pol.get("require_formulas") if STUDENT_SETS_POLICIES
+                             else CFG.get("require_formulas")) else "values"
+    st.radio("Checking", list(chk_opts), format_func=chk_opts.get,
+             index=list(chk_opts).index(chk_now), key="set_check", disabled=locked,
+             on_change=_set_checking,
+             help="Values only: a cell is right when its number is right, however you got it. "
+                  "Values and formulas: the number must also come from a formula (a typed-in "
+                  "number isn't accepted), and the formula must use the right columns.")
     if locked:
         st.caption("Policies are locked: " + ("set by your instructor." if not STUDENT_SETS_POLICIES
                                               else "you've submitted a piece."))
@@ -362,11 +411,11 @@ def start_over() -> None:
     SS["restarts"] = SS.get("restarts", 0) + 1
     SS["pieces"] = {k: new_piece() for k in ALL_PIECES}
     SS["results"] = {}
-    SS["policy"] = {"safety_stock_policy": CFG.get("safety_stock_policy") or "none",
-                    "worker_policy": CFG.get("worker_policy") or "whole"}
+    SS["policy"] = default_policy()
     SS["hybrid_mode"] = CFG.get("hybrid_mode") or "guided"
     for k in ("last_wb", "downloaded_hash", "wb_for", "wb_bytes", "wb_head_for",
-              "wb_head_bytes", "receipts", "hyb_seed_out", "final_pdf", "confirm_restart"):
+              "wb_head_bytes", "receipts", "hyb_seed_out", "final_pdf", "confirm_restart",
+              "has_own_wb"):
         SS.pop(k, None)
     for k in [k for k in SS if str(k).startswith(("headres_", "headcheck_", "up_"))]:
         del SS[k]
@@ -685,7 +734,7 @@ def page_start() -> None:
         st.markdown("On each plan sheet only **Month** and **Demand** are given. You decide "
                     "which columns the plan needs, name them, and write the formulas.")
         with st.expander("Excel tips"):
-            for t, d in text.EXCEL_TIPS:
+            for t, d in text.excel_tips(formulas_checked()):
                 st.markdown(f"**{t}.** {text.md(d)}")
             st.markdown("**Names for the given data:** "
                         + ", ".join(f"`{n}`" for n, _, _, _ in scn.name_keys()))
@@ -763,8 +812,8 @@ def legend() -> None:
     st.markdown("<div class='aa-legend'>" + "".join(
         f"<span><span style='background:{COLORS[k]};color:#222;padding:0 .35rem;border-radius:3px'>"
         f"{SYMBOL[k]}</span> {checker.STATUS_LABEL[k].split(' ', 1)[1]}</span>"
-        for k in ("ok", "wrong", "carried", "typed", "blank", "error", "decision", "waiting",
-                  "helper"))
+        for k in ("ok", "wrong", "carried") + (("typed",) if formulas_checked() else ())
+        + ("blank", "error", "decision", "waiting", "helper"))
         + f"<span><span style='background:{COLORS['ok']};color:#222;padding:0 .35rem;"
           "border-radius:3px'>✔<sup>!</sup></span> correct, but see the note</span>"
         + "</div>", unsafe_allow_html=True)
@@ -897,7 +946,9 @@ def hybrid_start_guide(scn, expanded: bool) -> None:
             "are now your decisions, not formulas pointing at the old planning cells.\n"
             "2. Add the columns a hybrid also needs (overtime, subcontracting, total production "
             "and their costs) and fill the hybrid planning cells.\n"
-            "3. Upload: the app checks the formulas and every limit.\n"
+            + ("3. Upload: the app checks the formulas and every limit.\n"
+               if formulas_checked() else
+               "3. Upload: the app checks your numbers and every limit.\n") +
             "4. Change one thing at a time where a cheaper source of bottles exists, and "
             "upload again — your cost is shown next to the chase and level plans.")
         _bottle_costs(scn)
@@ -1098,10 +1149,10 @@ def heading_why(found: Dict[str, str]) -> None:
 
 def workbook_bytes(scn, headings=None) -> bytes:
     stu = SS["student"]
-    if SS.get("wb_for") != (stu["sid"], scn.config_hash, HYBRID_ON):
+    if SS.get("wb_for") != (stu["sid"], scn.config_hash, HYBRID_ON, formulas_checked()):
         SS["wb_bytes"] = workbook.build_workbook(scn, student_name=stu["name"],
                                                  student_id=stu["sid"], game=GAME)
-        SS["wb_for"] = (stu["sid"], scn.config_hash, HYBRID_ON)
+        SS["wb_for"] = (stu["sid"], scn.config_hash, HYBRID_ON, formulas_checked())
     if not headings:
         return SS["wb_bytes"]
     sig = (SS["wb_for"], repr(sorted(headings.items())))
@@ -1238,16 +1289,8 @@ def design_columns(key: str, scn) -> None:
 
     if done == len(need):
         column_order(key, res, found)
-        if key == "chase":
-            st.markdown("#### ② Get your workbook")
-            policy_warning(scn)
-            download_workbook(scn, "chase", label="⬇ Download my workbook (with the headings)",
-                              headings=workbook_headings())
-            st.caption("Row 1 of the **Chase Plan** and **Level Plan** sheets already holds a "
-                       "heading for each of your columns, in the recommended order, using the "
-                       "standard names. Write the formulas below them — and keep working in "
-                       "this one file for every piece.")
-            heading_why(found)
+        if key == "chase" and not have_workbook():
+            st.markdown("**Next:** open **② Get your workbook** below.")
     # newest first: the latest check is above; then how they connect, what is still open,
     # and the earlier finds (most recent first) at the bottom
     with st.expander("How they connect"):
@@ -1270,20 +1313,154 @@ def design_columns(key: str, scn) -> None:
                 st.markdown(text.md(f"✔ **{c.heading}** — your heading "
                                     f"“{escape(found[concept])}”"))
                 st.caption(text.md(c.why))
-    if key == "chase" and done < len(need) and not SS.get("downloaded_hash"):
-        with st.expander("Need the workbook now?"):
-            st.caption("Your workbook comes once every column is found, with the headings "
-                       "already in it. Already know the columns, or need the file now?")
-            download_workbook(scn, "chase_skip",
-                              label="Download the workbook anyway (no headings)",
-                              primary=False, skipped=True)
 
 
-def show_guidance(key: str, scn) -> None:
+# ---- where the student is within a piece --------------------------------------------------
+# A piece is done in stages, always in the same order. The page shows them as a strip at the
+# top, says what to do next, numbers its sections to match, and opens only the section for
+# the stage the student is on — so nobody jumps ahead and gets lost.
+CIRCLED = "①②③④⑤⑥⑦"
+
+
+def have_workbook() -> bool:
+    return bool(SS.get("downloaded_hash") or SS.get("last_wb") or SS.get("has_own_wb"))
+
+
+def piece_stages(key: str) -> List[tuple]:
+    """[(stage, label, done)] for this piece, in order."""
     ps = SS["pieces"][key]
+    res = SS["results"].get(key)
+    stages = []
+    if key != "summary":
+        need = [c for c in columns.concepts(key) if not columns.is_optional(key, c)]
+        found = found_columns(key)
+        stages.append(("columns", "Find your columns",
+                       all(c in found for c in need)
+                       or (key == "chase" and bool(ps.get("skipped_design")))))
+    if key == "chase" or not have_workbook():
+        stages.append(("workbook", "Get your workbook", have_workbook()))
+    stages.append(("build", "Fill in the Summary sheet" if key == "summary"
+                   else "Fill it in, in Excel",
+                   any(not a.get("fatal") for a in ps["attempts"])))
+    stages.append(("check", "Upload, check & fix",
+                   bool(res is not None and not res.fatal and res.complete)))
+    stages.append(("submit", "Submit", bool(ps["submitted"])))
+    return stages
+
+
+def current_stage(stages) -> str:
+    return next((sid for sid, _, done in stages if not done), stages[-1][0])
+
+
+def stage_num(stages, sid: str) -> str:
+    ids = [s for s, _, _ in stages]
+    return CIRCLED[ids.index(sid)] if sid in ids else ""
+
+
+def stage_tracker(key: str, stages, scn) -> None:
+    """The strip of stages and one 'Do this next' instruction."""
+    cur = current_stage(stages)
+    chips = []
+    for n, (sid, label, done) in enumerate(stages):
+        cls = "done" if done else ("now" if sid == cur else "todo")
+        mark = "✔" if done else CIRCLED[n]
+        chips.append(f"<span class='aa-stage {cls}'>{mark} {escape(label)}</span>")
+    st.markdown("<div class='aa-stages'>" + "<span class='aa-arrow'>→</span>".join(chips)
+                + "</div>", unsafe_allow_html=True)
+    n = lambda sid: stage_num(stages, sid)               # noqa: E731
+    sheet = L.SHEET_SUMMARY if key == "summary" else L.PLAN_SHEETS[key]
+    res = SS["results"].get(key)
+    if cur == "columns":
+        need = [c for c in columns.concepts(key) if not columns.is_optional(key, c)]
+        done = sum(c in found_columns(key) for c in need)
+        msg = (f"Open **{n('columns')} Find your columns** below. Turn each question into a "
+               f"column heading and check it, one at a time ({done} of {len(need)} found).")
+    elif cur == "workbook":
+        msg = (f"Download your workbook in **{n('workbook')} Get your workbook** below"
+               + (" — row 1 already has your headings." if key == "chase" else ".")
+               + " Keep working in this one file for every piece.")
+    elif cur == "build":
+        msg = (f"Open the **{sheet}** sheet in Excel and follow **{n('build')}** below"
+               + ("" if key == "summary" else
+                  ": the planning cells first, then January–December, then the totals in row 14")
+               + f". Save it, then upload it in **{n('check')}**.")
+    elif cur == "check":
+        msg = ("Your last upload couldn't be checked — read the message under "
+               f"**{n('check')} Upload, check & fix**, then upload again."
+               if res is not None and res.fatal else
+               f"Work through **What to work on** in **{n('check')}** below, fix those cells in "
+               "Excel, save, and upload again. Each new upload unlocks more help.")
+    else:
+        msg = "Everything is correct. Press **Submit** at the bottom of the page to hand it in."
+    html = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escape(msg, quote=False))
+    st.markdown(f"<div class='aa-next'><b>👉 Do this next.</b> {html}</div>",
+                unsafe_allow_html=True)
+
+
+def workbook_section(scn, stages) -> None:
+    """Chase plan: the workbook comes once every column is found (with the headings in it)."""
+    cur = current_stage(stages)
+    with st.expander(f"{stage_num(stages, 'workbook')} Get your workbook",
+                     expanded=cur == "workbook"):
+        found = found_columns("chase")
+        cols_done = dict((s, d) for s, _, d in stages)["columns"]
+        if cols_done and not SS["pieces"]["chase"].get("skipped_design"):
+            policy_warning(scn)
+            download_workbook(scn, "chase", label="⬇ Download my workbook (with the headings)",
+                              headings=workbook_headings())
+            st.caption("Row 1 of the **Chase Plan** and **Level Plan** sheets already holds a "
+                       "heading for each of your columns, in the recommended order, using the "
+                       "standard names. Write the formulas below them — and keep working in "
+                       "this one file for every piece.")
+            heading_why(found)
+        elif have_workbook():
+            policy_warning(scn)
+            st.write("You have your workbook — keep working in that one file. "
+                     "(A fresh copy is on step 1.)")
+        else:
+            st.info(f"Your workbook comes once every column is found in "
+                    f"**{stage_num(stages, 'columns')}**, with the headings already in row 1.")
+            with st.expander("Need the workbook now?"):
+                st.caption("Already know the columns, or need the file now? This one has no "
+                           "headings; your report notes that you downloaded it early.")
+                download_workbook(scn, "chase_skip",
+                                  label="Download the workbook anyway (no headings)",
+                                  primary=False, skipped=True)
+
+
+def build_section(key: str, scn, stages) -> None:
+    """What to do in Excel, in order — planning cells first."""
+    cur = current_stage(stages)
+    with st.expander(f"{stage_num(stages, 'build')} Fill it in, in Excel",
+                     expanded=cur == "build"):
+        if not have_workbook():
+            st.caption(f"You'll do this in your workbook — get it in "
+                       f"**{stage_num(stages, 'workbook')}** first.")
+        sheet = L.PLAN_SHEETS[key]
+        st.markdown(f"On the **{sheet}** sheet, in this order:\n"
+                    "1. **Planning cells** under the grid (table below) — the one-off numbers "
+                    "the months use.\n"
+                    "2. **January–December** (rows 2–13) for each column, left to right.\n"
+                    "3. **Totals** in row 14 for the cost columns.\n"
+                    "4. **Save** as .xlsx in Excel, then upload in "
+                    f"**{stage_num(stages, 'check')}**.")
+        st.caption(text.md(text.checking_sentence(formulas_checked())))
+        md_table(pd.DataFrame([{"Cell": L.planning_ref(key, pc.key),
+                                "Work out": f"{pc.label} ({pc.unit})",
+                                "Think about": hints.ladder(key, f"plan:{pc.key}",
+                                                            scn.whole_workers)[0]}
+                               for pc in L.PLANNING[key]]))
+
+
+def show_guidance(key: str, scn, stages) -> list:
+    ps = SS["pieces"][key]
+    cur = current_stage(stages)
     st.markdown(f"<div class='aa-card'><b>The goal.</b> {escape(GOALS[key])}</div>",
                 unsafe_allow_html=True)
     if key == "summary":
+        if "workbook" in stages and not have_workbook():
+            st.info("You need your workbook for this piece — download it on step 1.")
+        st.markdown(f"#### {stage_num(stages, 'build')} Fill in the Summary sheet")
         st.markdown("Fill the **Summary** sheet: each plan's yearly figures, which plan costs "
                     "less, the savings, your recommendation and why. Use formulas that point "
                     "at your plan sheets.")
@@ -1292,15 +1469,23 @@ def show_guidance(key: str, scn) -> None:
                     "plans only. If your Summary sheet has a Hybrid column, leave it empty — it "
                     "isn't checked — and recommend **Chase** or **Level**.")
     else:
-        with st.expander("① Design your columns", expanded=not ps["attempts"]):
+        with st.expander(f"{stage_num(stages, 'columns')} Find your columns",
+                         expanded=cur == "columns"):
             design_columns(key, scn)
-        with st.expander("② Planning cells (do these first)", expanded=not ps["attempts"]):
-            st.write(f"Under the grid on the **{L.PLAN_SHEETS[key]}** sheet:")
-            md_table(pd.DataFrame([{"Cell": L.planning_ref(key, pc.key),
-                                    "Work out": f"{pc.label} ({pc.unit})",
-                                    "Think about": hints.ladder(key, f"plan:{pc.key}",
-                                                                scn.whole_workers)[0]}
-                                   for pc in L.PLANNING[key]]))
+        stages = piece_stages(key)               # the check above may have found the last one
+        if any(s == "workbook" for s, _, _ in stages):
+            if key == "chase":
+                workbook_section(scn, stages)
+            else:
+                with st.expander(f"{stage_num(stages, 'workbook')} Get your workbook",
+                                 expanded=cur == "workbook"):
+                    st.write("Keep working in the workbook you used for the chase plan. Lost "
+                             "it? Download a fresh copy on step 1 (or your latest upload from "
+                             "the sidebar).")
+                    if st.button("I have my workbook", key=f"own_wb_{key}"):
+                        SS["has_own_wb"] = True
+                        st.rerun()
+        build_section(key, scn, stages)
     if key != "summary":
         with st.expander("Your company's policies: safety stock, backorders, workers"):
             show_policies(scn)
@@ -1314,6 +1499,7 @@ def show_guidance(key: str, scn) -> None:
                 st.markdown(hint_block(key, item, lvl), unsafe_allow_html=True)
             for concept, lvl in ps["colhelp"].items():
                 st.markdown(f"- {escape(hints.column_hint(key, concept, lvl))}")
+    return stages
 
 
 def show_columns(key: str, res: checker.PieceResult, ps: dict) -> None:
@@ -1387,7 +1573,7 @@ def show_feedback(key: str, res: checker.PieceResult, ps: dict) -> None:
             st.caption(text.md(f"**{item_name(key, item, res)}** ({refs}): {cells[0].notice}"))
     if carried:
         st.caption(f"↪ {carried} more cell{'s' if carried != 1 else ''} only follow an earlier "
-                   "mistake: their formulas look right and should correct themselves once the "
+                   "mistake: they follow the rule and should correct themselves once the "
                    "cells above are fixed.")
     if todo:
         names = [f"{item_name(key, it, res)} ({len(cs)})" for it, cs in todo.items()]
@@ -1434,15 +1620,30 @@ def page_piece(key: str) -> None:
         return
 
     guided = key == "hybrid" and SS["hybrid_mode"] == "guided"
+    stages = piece_stages(key)
     if guided:
         if not guided_hybrid(scn, ps):
             nav_buttons(key, next_disabled=True)
             return
+        st.subheader("Upload & check")
     else:
-        show_guidance(key, scn)
-    st.subheader("Upload & check")
+        top = st.container()                 # filled last: a heading check may finish a stage
+        stages = show_guidance(key, scn, stages)
+        with top:
+            stage_tracker(key, stages, scn)
+        st.markdown("<div id='aa-upload'></div>", unsafe_allow_html=True)
+        st.subheader(f"{stage_num(stages, 'check')} Upload, check & fix")
+        if not have_workbook():
+            st.info("Upload opens once you have your workbook — get it in "
+                    f"**{stage_num(stages, 'workbook')} Get your workbook** above.")
+            if st.button("I already have my workbook", key=f"own_wb_up_{key}"):
+                SS["has_own_wb"] = True
+                st.rerun()
+            nav_buttons(key, next_disabled=True)
+            return
     st.write("Save your workbook in Excel, then upload it here. Only the "
              f"**{checker.PIECE_TITLES[key].lower()}** is checked at this step.")
+    st.caption(text.md(text.checking_sentence(formulas_checked())))
     up = st.file_uploader("Your workbook (.xlsx)", type=["xlsx"], key=f"up_{key}")
     upload_copy_help()
     if up is not None:
@@ -1465,7 +1666,7 @@ def page_piece(key: str) -> None:
     for msg in res.messages:
         st.warning(msg)
     c1, c2 = st.columns([1, 2])
-    c1.metric("Formulas correct" if key == "hybrid" else "Cells correct",
+    c1.metric("Formulas correct" if key == "hybrid" and formulas_checked() else "Cells correct",
               f"{res.n_ok} / {res.n_total}")
     c2.progress(res.n_ok / max(1, res.n_total))
     if key == "hybrid":
@@ -1482,7 +1683,7 @@ def page_piece(key: str) -> None:
                   for k in ("chase", "level") if submitted(k)}
         if "hybrid" in res.metrics and others:
             mine = res.metrics["hybrid"]["Total Cost"]
-            st.caption(text.md(f"Your hybrid costs ${mine:,.0f} (if your formulas are right): "
+            st.caption(text.md(f"Your hybrid costs ${mine:,.0f} (if your cells are right): "
                                + " · ".join(f"{k} ${v:,.0f}" for k, v in others.items())))
     verdict = guided_verdict(scn, ps, res) if guided else None
     show_feedback(key, res, ps)
@@ -1503,7 +1704,7 @@ def page_piece(key: str) -> None:
 
     improve = (res.complete and guided and verdict is not None and not verdict.good)
     if improve:
-        st.info("Every formula is right, but this plan isn't better than your starting plan "
+        st.info("Every cell is right, but this plan isn't better than your starting plan "
                 f"yet (${verdict.cost:,.0f} vs ${verdict.start_cost:,.0f}). Follow the "
                 "checklist above, change the green cells, and upload again. You can submit "
                 "once your hybrid beats both pure strategies.")
@@ -1515,11 +1716,13 @@ def page_piece(key: str) -> None:
             if best is not None and res.metrics["hybrid"]["Total Cost"] >= best - 0.5:
                 st.warning("Your hybrid costs no less than your cheaper pure plan. You can "
                            "submit it, but a hybrid should mix the levers to beat both.")
+        if not guided:
+            st.markdown(f"#### {stage_num(stages, 'submit')} Submit")
         if st.button(f"Submit the {checker.PIECE_TITLES[key].lower()}", type="primary"):
             submit_piece(key, res)
             st.rerun()
     elif res.feasibility and not res.feasible and all(c.status == "ok" for c in res.graded):
-        st.info("Your formulas are all correct, but the plan breaks a limit. Change your "
+        st.info("Your cells are all correct, but the plan breaks a limit. Change your "
                 "decisions (workers, regular production, overtime, subcontracting) and upload again.")
     nav_buttons(key, next_disabled=True)
 

@@ -117,7 +117,9 @@ def build_report(scn: Scenario, *, student_name: str, student_id: str, identity_
             ["Identity", identity_label], ["Created", now.strftime("%Y-%m-%d %H:%M %Z").strip()],
             ["Report ID", rid],
             ["Scenario", f"#{scn.seed}  ·  config {scn.config_hash}  ·  model {MODEL_VERSION}"
-                         + (f"  ·  started over {restarts}×" if restarts else "")]]
+                         + (f"  ·  started over {restarts}×" if restarts else "")],
+            ["Checking", "values and formulas" if scn.params.get("require_formulas")
+                         else "values only (a right number is accepted however it was made)"]]
     story.append(table(info, [1.4 * inch, 5.6 * inch], head=False))
 
     story.append(P("Pieces", h2))

@@ -26,6 +26,21 @@ one-page **receipt PDF**, so an instructor can collect pieces on separate due da
 keeps working in the same workbook throughout and uploads it at each step; only that step's
 piece is checked.
 
+### Within a step: one stage at a time
+
+Each plan step shows a strip of stages at the top, always in the same order, with the current
+one highlighted and a single **👉 Do this next** instruction under it:
+
+| Chase plan | Level / hybrid (build) | Compare & recommend |
+|---|---|---|
+| ① Find your columns → ② Get your workbook → ③ Fill it in, in Excel → ④ Upload, check & fix → ⑤ Submit | ① Find your columns → ② Fill it in → ③ Upload, check & fix → ④ Submit | ① Fill in the Summary sheet → ② Upload, check & fix → ③ Submit |
+
+The page's sections carry the same numbers, and only the section for the current stage is open.
+**Upload** appears once the student has a workbook (downloaded, uploaded before, or *I already
+have my workbook* for someone working from a copy on another computer). *Fill it in* lists the
+order of work: planning cells, then January–December, then the totals, then save. The guided
+hybrid keeps its own walkthrough.
+
 ## Students build the columns
 
 On each plan sheet only **Month** (column A) and **Demand** (column B) are given. The student
@@ -115,8 +130,8 @@ instructor, not a grade.
 
 ### Cell statuses
 
-✔ correct (and calculated by a formula) · ✖ not right yet · ↪ follows an earlier mistake ·
-✎ right number but typed in · ○ empty · ⚠ Excel error / text / not calculated ·
+✔ correct · ✖ not right yet · ↪ follows an earlier mistake ·
+✎ right number but typed in (only when formulas are checked) · ○ empty · ⚠ Excel error / text / not calculated ·
 ◆ hybrid decision (the student's choice)
 
 The results show a "What to work on" list (root causes only), the column check, and a grid laid
@@ -126,13 +141,24 @@ so all columns fit; hybrid columns wait (…) until the decisions are filled in.
 
 ## Settings (sidebar)
 
-Three switches sit in the sidebar under **Settings**:
+Four switches sit in the sidebar under **Settings**:
 
 | Switch | Options (default first) |
 |---|---|
 | **Safety stock** | *None* (EndTarget = 0) · *Keep the safety stock* (EndTarget = the safety-stock quantity) |
 | **Workforce** | *Whole workers* (round up; idle capacity is paid) · *Fractional workers* (capacity grows in small increments — part-time hours — with no rounding) |
+| **Checking** | *Values only* (a cell is right when its number is right, however it was made) · *Values and formulas* (the number must come from a formula — a typed-in number is ✎ — and the formula must use the right columns: not one the item doesn't depend on, and not leaving one out) |
 | **Hybrid plan** | *Guided walkthrough* · *Build it yourself* · *Off* (chase and level only) |
+
+**Checking** starts at the instructor's `require_formulas` (off by default) and locks with the
+policies once the first piece is submitted, so every piece is checked the same way. It doesn't
+change any answer, so a workbook already downloaded is still accepted; switching re-checks the
+latest upload under the new rule. The help follows it: the upload area, the *Fill it in* stage,
+the Excel tips, the workbook's *Start here* and *Excel Help* sheets, the colour legend and the
+PDF report all say which kind of checking applies. Formula-only feedback (✎ typed in, a formula
+pointing at the wrong column, a formula leaving out a term) appears only when formulas are
+checked; hints still show how to build each item in Excel, because formulas remain the way to
+get the numbers right.
 
 The workbook, answer key, checker and hints follow the two policies. Those lock once the first
 piece is submitted (every piece must follow the same rules); changing them earlier asks the
@@ -298,11 +324,11 @@ minutes; an unknown code falls back to the defaults).
 | `safety_stock_policy` | `none` | `maintain` makes `EndTarget` = safety stock |
 | `beginning_backorders` | 0 | orders still owed before January (`BeginBackorders`) |
 | `worker_policy` | `whole` | `partial` allows fractional workers (no rounding) |
-| `student_sets_policies` | true | students set the two policies in the sidebar |
+| `student_sets_policies` | true | students set the two policies and the checking in the sidebar |
 | `hybrid_mode` | `guided` | default hybrid mode (`guided`, `build` or `off`); students can switch |
 | `scenario_preset` | `standard` | `strong_seasonal`, `stability_favored`, `limited_flex`, `tight_storage` |
 | `include_hybrid` | true | include the Hybrid Plan piece |
-| `require_formulas` | true | a typed number in a calculated cell is not accepted |
+| `require_formulas` | false | check formulas as well as values (a typed number is not accepted, and each formula must use the right columns); off = values only. Students can switch it unless `student_sets_policies` is off |
 | `min_justification_words` | 50 | minimum length of the justification |
 | `service_requirement_pct`, `terminal_backlog_max` | 95, 0 | hybrid feasibility limits |
 | `assignment_name`, `report_timezone` | … | shown in the workbook and PDFs |

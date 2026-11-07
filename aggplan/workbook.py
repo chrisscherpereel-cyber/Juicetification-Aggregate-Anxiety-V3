@@ -156,8 +156,14 @@ def _start_sheet(wb, scn: Scenario, name: str, sid: str):
                            "and the yearly totals in row 14."),
              ("Plan first", "Fill the planning cells under the grid first — the one-off numbers "
                             "the months will use."),
-             ("Use formulas", "Every number you work out must be an Excel formula (start with =). "
-                              "Use the names on the Scenario sheet, e.g. =…*LaborCost."),
+             (("Use formulas", "Every number you work out must be an Excel formula (start "
+                               "with =) — a typed-in number isn't accepted. Use the names on the "
+                               "Scenario sheet, e.g. =…*LaborCost.")
+              if bool(scn.params.get("require_formulas", False)) else
+              ("Use formulas", "Work out every number with an Excel formula (start with =) and "
+                               "the names on the Scenario sheet, e.g. =…*LaborCost. The app "
+                               "checks the values; formulas keep them right when something "
+                               "changes.")),
              ("Check", "Save as .xlsx and upload it at that piece's step in the app. You'll see "
                        "which cells are right; each new attempt unlocks more help on what is "
                        "still wrong. When a piece is all correct, submit it and move on.")]
@@ -352,7 +358,7 @@ def _summary_sheet(wb, scn: Scenario):
     _protect(ws)
 
 
-def _help_sheet(wb):
+def _help_sheet(wb, scn):
     ws = wb.create_sheet(L.SHEET_HELP)
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = 30
@@ -361,7 +367,7 @@ def _help_sheet(wb):
     _put(ws, "A1", "Excel help", font=TITLE)
     r = 3
     _put(ws, f"A{r}", "Habits that make this easy", font=H2)
-    for t, d in text.EXCEL_TIPS:
+    for t, d in text.excel_tips(bool(scn.params.get("require_formulas", False))):
         r += 1
         _put(ws, f"A{r}", t, font=BOLD, wrap=True)
         _put(ws, f"B{r}", d, wrap=True)
@@ -580,7 +586,7 @@ def _build(scn, student_name, student_id, game, solution, hybrid_decision, colum
     for kind in pieces:
         _plan_sheet(wb, scn, kind)
     _summary_sheet(wb, scn)
-    _help_sheet(wb)
+    _help_sheet(wb, scn)
     _meta_sheet(wb, scn, student_name, student_id, game)
     if solution:
         letters = {}
