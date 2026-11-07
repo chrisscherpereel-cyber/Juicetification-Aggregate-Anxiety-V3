@@ -41,9 +41,10 @@ def test_students_own_columns_and_headings_are_recognised(piece):
 
 def test_pieces_are_checked_separately():
     data = fixture("mistakes_seed7.xlsx")
-    chase = checker.check_piece(data, scn7(), "chase", SID)
-    level = checker.check_piece(data, scn7(), "level", SID)
-    hybrid = checker.check_piece(data, scn7(), "hybrid", SID)
+    s = scn7(require_formulas=True)
+    chase = checker.check_piece(data, s, "chase", SID)
+    level = checker.check_piece(data, s, "level", SID)
+    hybrid = checker.check_piece(data, s, "hybrid", SID)
     assert {c.sheet for c in chase.cells} == {L.SHEET_CHASE}
     assert {c.sheet for c in level.cells} == {L.SHEET_LEVEL}
     assert hybrid.complete and not chase.complete and not level.complete
@@ -51,9 +52,11 @@ def test_pieces_are_checked_separately():
 
 def test_typical_mistakes_are_diagnosed():
     data = fixture("mistakes_seed7.xlsx")
-    chase = checker.check_piece(data, scn7(), "chase", SID)
+    chase = checker.check_piece(data, scn7(require_formulas=True), "chase", SID)
     assert _cell(chase, "N3").status == "typed"
     assert set(chase.problem_items()) == {"Holding Cost"}
+    # values only (the default): the typed number is right, so it is accepted
+    assert _cell(checker.check_piece(data, scn7(), "chase", SID), "N3").status == "ok"
     level = checker.check_piece(data, scn7(), "level", SID)
     e3 = _cell(level, "E3")
     assert e3.status == "wrong" and "$C$20" in e3.diag
@@ -149,8 +152,10 @@ def test_unrounded_workers_get_a_specific_observation(key_book):
 
 def test_typed_numbers_allowed_when_formulas_not_required(key_book):
     b = book_from(key_book, {(L.SHEET_CHASE, "K2"): Cell(16000.0, None)})
-    assert _cell(checker.check_book(b, scn7(), "chase", SID), "K2").status == "typed"
+    assert _cell(checker.check_book(b, scn7(require_formulas=True), "chase", SID),
+                 "K2").status == "typed"
     assert checker.check_book(b, scn7(require_formulas=False), "chase", SID).complete
+    assert checker.check_book(b, scn7(), "chase", SID).complete       # values only by default
 
 
 def test_lower_cost_answer_must_match(key_book):

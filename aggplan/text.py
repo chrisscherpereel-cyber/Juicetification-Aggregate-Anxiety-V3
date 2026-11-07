@@ -156,6 +156,29 @@ EXCEL_FUNCTIONS = [
     ("ABS", "=ABS(A1-B1)", "size of a difference, without the minus sign"),
 ]
 
+FIRST_TIP_VALUES_ONLY = (
+    "Start every calculation with =",
+    "Type =C2+E2 rather than the number you worked out. The app checks the numbers, but a "
+    "formula updates itself when an input changes — fix one cell and every cell that uses it "
+    "follows. Numbers worked out on a calculator and typed in have to be redone by hand.")
+
+
+def excel_tips(require_formulas: bool) -> list:
+    """The Excel habits, worded for the checking mode (values only, or values and formulas)."""
+    return EXCEL_TIPS if require_formulas else [FIRST_TIP_VALUES_ONLY] + EXCEL_TIPS[1:]
+
+
+def checking_sentence(require_formulas: bool) -> str:
+    """One sentence a student reads: what the app checks."""
+    if require_formulas:
+        return ("The app checks your **values and your formulas**: a right number must be "
+                "calculated by a formula (a typed-in number isn't accepted), and the formula "
+                "must use the right columns.")
+    return ("The app checks the **values** in your cells — a right number is right however you "
+            "got it. Formulas are still the way to get there: they update themselves when an "
+            "input changes.")
+
+
 # Patterns: how a planning question becomes a formula (the shape, never the answer).
 EXCEL_PATTERNS = [
     ("Never below zero", "=MAX(0, have - need)",

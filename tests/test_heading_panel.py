@@ -58,7 +58,7 @@ def test_misses_get_more_help_and_a_find_explains_why():
     assert at.session_state["pieces"]["chase"]["head_misses"] == 2
     assert "1 of 14 columns found" in str(at.get("progress")[0].proto)
     at = check(at, "Opening inventory")
-    assert "same question" in at.info[-1].value
+    assert any("same question" in i.value for i in at.info)
     assert "How many bottles are on the shelf when the month starts?" not in texts(at)
 
 

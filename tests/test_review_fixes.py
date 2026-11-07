@@ -70,7 +70,7 @@ def test_hires_reading_the_overtime_column_is_wrong_even_when_the_number_fits(ke
     # the reviewer's K2 / L3: overtime is 0, so the values happen to be right
     b = book_from(key_book, {(HYB, "K3"): Cell(0, "=MAX(0,H3-E2)"),
                              (HYB, "L3"): Cell(0, "=MAX(0,H2-E3)")})
-    res = checker.check_book(b, scn7(), "hybrid", SID)
+    res = checker.check_book(b, scn7(require_formulas=True), "hybrid", SID)
     for ref in ("K3", "L3"):
         c = _cell(res, ref)
         assert c.status == "wrong" and "Overtime Production" in c.diag
@@ -89,7 +89,7 @@ def test_legitimate_variations_are_not_flagged(key_book):
 # ---- Summary: the lower-cost answer must follow the totals ---------------------------------
 def test_lower_cost_cell_pointing_at_a_heading_is_not_accepted(key_book):
     b = book_from(key_book, {(L.SHEET_SUMMARY, L.LOWER_COST_CELL): Cell("Chase", "=B3")})
-    res = checker.check_book(b, scn7(), "summary", SID)
+    res = checker.check_book(b, scn7(require_formulas=True), "summary", SID)
     c = _cell(res, L.LOWER_COST_CELL)
     assert c.status == "wrong" and "TOTAL PLAN COST" in c.diag
 
@@ -205,11 +205,23 @@ def test_guided_improved_plan_can_be_submitted():
     assert any(b.label.startswith("Submit the hybrid") for b in at.button)
 
 
+def test_values_only_judges_the_number_not_the_formula(key_book):
+    # the same formulas as above: the numbers fit, so with values only they are accepted
+    b = book_from(key_book, {(HYB, "K3"): Cell(0, "=MAX(0,H3-E2)"),
+                             (HYB, "M5"): Cell(14900, "=MAX(0,C5+G5-D5-B5)"),
+                             (L.SHEET_LEVEL, "I5"): Cell(12100, "=MAX(0,C5+E5-B5)"),
+                             (L.SHEET_SUMMARY, L.LOWER_COST_CELL): Cell("Chase", "=B3")})
+    for piece, ref in (("hybrid", "K3"), ("hybrid", "M5"), ("level", "I5"),
+                       ("summary", L.LOWER_COST_CELL)):
+        c = _cell(checker.check_book(b, scn7(), piece, SID), ref)
+        assert c.status == "ok" and not c.diag and not c.notice
+
+
 # ---- formulas that leave out something their column depends on ---------------------------
 def test_chase_formula_missing_a_zero_term_gets_a_notice_not_a_mistake(key_book):
     # the reviewer's chase Ending Inventory =C+E-B leaves out Beginning Backorders (always 0)
     b = book_from(key_book, {(L.SHEET_CHASE, "I5"): Cell(0, "=MAX(0,C5+E5-B5)")})
-    res = checker.check_book(b, scn7(), "chase", SID)
+    res = checker.check_book(b, scn7(require_formulas=True), "chase", SID)
     c = _cell(res, "I5")
     assert c.status == "ok" and "Beginning Backorders (D)" in c.notice
     assert res.complete                                  # a notice never blocks
@@ -219,7 +231,7 @@ def test_chase_formula_missing_a_zero_term_gets_a_notice_not_a_mistake(key_book)
 def test_level_formula_missing_a_term_is_wrong_even_when_the_number_fits(key_book):
     # May: no backorders yet, so leaving D out gives the right number — but not in general
     b = book_from(key_book, {(L.SHEET_LEVEL, "I5"): Cell(12100, "=MAX(0,C5+E5-B5)")})
-    res = checker.check_book(b, scn7(), "level", SID)
+    res = checker.check_book(b, scn7(require_formulas=True), "level", SID)
     c = _cell(res, "I5")
     assert c.status == "wrong" and "Beginning Backorders (D)" in c.diag and not c.notice
     assert not res.complete
@@ -228,7 +240,7 @@ def test_level_formula_missing_a_term_is_wrong_even_when_the_number_fits(key_boo
 def test_hybrid_formula_missing_overtime_is_wrong(key_book):
     # Ending Inventory from Regular Production only: right while overtime is 0
     b = book_from(key_book, {(HYB, "M5"): Cell(14900, "=MAX(0,C5+G5-D5-B5)")})
-    res = checker.check_book(b, scn7(), "hybrid", SID)
+    res = checker.check_book(b, scn7(require_formulas=True), "hybrid", SID)
     assert _cell(res, "M5").status == "wrong"
 
 
