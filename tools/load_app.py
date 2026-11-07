@@ -21,7 +21,8 @@ if qp.get("sid") and "_load_ready" not in st.session_state:
     from aggplan.scenario import resolve_scenario
     st.session_state["_load_ready"] = True
     st.session_state["student"] = {"name": f"Load {qp['sid']}", "sid": qp["sid"]}
-    pieces = {k: {"attempts": [], "help": {}, "colhelp": {}, "submitted": None}
+    pieces = {k: {"attempts": [], "help": {}, "colhelp": {}, "submitted": None, "found": {},
+                  "head_misses": 0}
               for k in ("chase", "level", "hybrid", "summary")}
     pieces["chase"]["submitted"] = {"at": "now", "sha": "x", "file": "f", "metrics": {},
                                     "feasibility": []}
@@ -31,8 +32,28 @@ if qp.get("sid") and "_load_ready" not in st.session_state:
     key = open(os.path.join(ROOT, "tests", "fixtures", "key_seed7.xlsx"), "rb").read()
     st.session_state["results"] = {
         "level": checker.check_piece(key, resolve_scenario({}, 7), "level", None)}
+    # mid-course, a student has downloaded the workbook and uploaded it at least once; the
+    # app keeps the latest upload for the sidebar's "My latest workbook" and progress file
+    from aggplan import persistence
+    st.session_state["last_wb"] = persistence.workbook_entry("workbook.xlsx", key)
+    st.session_state["downloaded_hash"] = resolve_scenario({}, 7).config_hash
 if qp.get("step"):
     st.session_state["step"] = qp["step"]
 
-exec(compile(open(os.path.join(ROOT, "app.py"), encoding="utf-8").read(), "app.py", "exec"),
-     globals())
+# Compile app.py once per process, as Streamlit does for a deployed main script (it caches
+# the bytecode); recompiling it on every click would add ~15 ms that a real class never pays.
+_cache = sys.modules.setdefault("_aa_load_cache", type(sys)("_aa_load_cache"))
+if not hasattr(_cache, "code"):
+    _cache.code = compile(open(os.path.join(ROOT, "app.py"), encoding="utf-8").read(),
+                          "app.py", "exec")
+if os.environ.get("AA_PROFILE"):                 # profile the app's own run (this thread)
+    import cProfile
+    _cache.prof = getattr(_cache, "prof", None) or cProfile.Profile()
+    _cache.prof.enable()
+    try:
+        exec(_cache.code, globals())
+    finally:
+        _cache.prof.disable()
+        _cache.prof.dump_stats(os.environ["AA_PROFILE"])
+else:
+    exec(_cache.code, globals())
