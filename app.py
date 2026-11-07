@@ -15,17 +15,19 @@ Run:  streamlit run app.py        (see README.md for instructor configuration)
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
+import functools
 import hashlib
 import re
 from html import escape
+from contextlib import contextmanager
 from typing import Dict, List
 
 import altair as alt
 import pandas as pd
 from openpyxl.utils import get_column_letter
 import streamlit as st
-import streamlit.components.v1 as components
 
 import student_store as store
 from juice_director import resolve_config, serve_manifest_if_requested
@@ -36,6 +38,9 @@ from aggplan import (checker, columns, engine, guide, hints, layout as L, persis
 from aggplan import identity as ident
 from aggplan.recognize import HELPER
 from aggplan.scenario import MONTHS as L_MONTHS, resolve_scenario
+from aggplan import tune_gc_once
+
+tune_gc_once()                          # once per process, not per click
 
 st.set_page_config(page_title="Aggregate Anxiety — Excel", page_icon="🧃", layout="wide")
 SS = st.session_state
@@ -450,6 +455,14 @@ def start_over_box() -> None:
         st.rerun()
 
 
+def _wb_file(entry: dict) -> bytes:
+    return persistence.workbook_bytes(entry) or b""
+
+
+def _progress_file(snapshot: dict, key) -> bytes:
+    return persistence.encode_file(snapshot, key)
+
+
 def your_work() -> None:
     """Sidebar: is my work safe, and how do I take it to another computer?"""
     stu = SS["student"]
@@ -474,17 +487,25 @@ def your_work() -> None:
     else:
         st.caption("⚠ Server saving is off for this app. Before you close this tab or switch "
                    "computers, download your progress file (and your workbook).")
-    wb = persistence.workbook_bytes(SS.get("last_wb"))
-    if wb:
-        st.download_button("⬇ My latest workbook", wb, file_name=SS["last_wb"]["name"],
+    # Both files are made only when the button is clicked (Streamlit calls the function on
+    # its own thread), not on every click anywhere in the app: the progress file is the whole
+    # saved state with the workbook inside, encoded and signed. The function gets a private
+    # copy of the state taken now, so a rerun that changes the session can't race it.
+    last = SS.get("last_wb")
+    if last and last.get("b64"):
+        st.download_button("⬇ My latest workbook", functools.partial(_wb_file, dict(last)),
+                           file_name=last["name"],
                            mime="application/vnd.openxmlformats-officedocument."
                                 "spreadsheetml.sheet", width="stretch", key="dl_last_wb",
+                           on_click="ignore",
                            help="The last workbook you uploaded — continue in it on any "
                                 "computer.")
-    st.download_button("⬇ Progress file", persistence.encode_file(current_snapshot(),
-                                                                  ident.signing_key()),
+    st.download_button("⬇ Progress file",
+                       functools.partial(_progress_file, copy.deepcopy(current_snapshot()),
+                                         ident.signing_key()),
                        file_name=f"Aggregate_Anxiety_progress_{stu['sid']}.json",
                        mime="application/json", width="stretch", key="dl_progress",
+                       on_click="ignore",
                        help="Everything you've done, including your latest workbook. Upload it "
                             "on step 1 of any computer to continue.")
     start_over_box()
@@ -526,9 +547,30 @@ with st.sidebar:
                  "it and the next one opens.")
 
 
-def upload_copy_help() -> None:
+@contextmanager
+def lazy_expander(label: str, key: str, expanded: bool = False):
+    """A section whose contents are drawn only while it is open.
+
+    Streamlit sends every element on the page on every click, including what sits inside a
+    closed expander. Sections students open rarely (policies, Excel help, the found-columns
+    list, …) made up about half of a step's elements. Tracked expanders (`on_change="rerun"`)
+    report `.open`, so a closed one costs one element; opening it reruns the page with its
+    contents. On a Streamlit without expander tracking this is a plain expander."""
+    try:
+        exp = st.expander(label, expanded=expanded, key=key, on_change="rerun")
+        is_open = getattr(exp, "open", None)
+    except TypeError:                                   # older Streamlit: no tracking
+        exp, is_open = st.expander(label, expanded=expanded), None
+    with exp:
+        yield True if is_open is None else bool(is_open)
+
+
+def upload_copy_help(where: str = "") -> None:
     """Workaround for 'file is in use' when the workbook is still open in Excel."""
-    with st.expander("Workbook still open in Excel? Upload a copy instead"):
+    with lazy_expander("Workbook still open in Excel? Upload a copy instead",
+                       f"lx_upload_copy{where}") as show:
+        if not show:
+            return
         st.markdown("Excel locks a workbook while it's open, so the browser can't read it "
                     "(*\"This file is in use\"* or *Network Error*). Either close the workbook "
                     "first, or set up a one-click button that saves a copy to your "
@@ -542,28 +584,39 @@ def upload_copy_help() -> None:
                     "use **File → Save As → Download a Copy** instead.")
 
 
+def run_script(html: str) -> None:
+    """A tiny invisible frame whose script acts on the page (scrolling). st.iframe replaces
+    st.components.v1.html, which Streamlit deprecated for removal after 2026-06-01; older
+    Streamlit versions without st.iframe still use the component."""
+    if hasattr(st, "iframe"):
+        st.iframe(html, height="content")
+    else:                                                   # pragma: no cover
+        import streamlit.components.v1 as components
+        components.html(html, height=0)
+
+
 def scroll_to_top(token: str) -> None:
     """Streamlit keeps the scroll position across reruns; a new step should start at the top."""
     if SS.get("_scrolled_for") == token:
         return
     SS["_scrolled_for"] = token
-    components.html(f"""<div style="display:none">{token}</div><script>(function(){{
+    run_script(f"""<div style="display:none">{token}</div><script>(function(){{
       try{{const d=window.parent.document;
       const up=()=>{{for(const s of ['[data-testid="stMain"]','[data-testid="stAppViewContainer"]',
                       'section.main']){{const e=d.querySelector(s); if(e){{e.scrollTop=0;}}}}
                     window.parent.scrollTo(0,0);}};
-      up(); setTimeout(up,100); setTimeout(up,400);}}catch(e){{}}}})();</script>""", height=0)
+      up(); setTimeout(up,100); setTimeout(up,400);}}catch(e){{}}}})();</script>""")
 
 
 def scroll_to_anchor(anchor: str, token: str) -> None:
     """Bring an element into view after this rerun (e.g. the reply to a heading check, which
     the browser otherwise leaves wherever the page happened to end up). `token` must change
     for every scroll, or Streamlit reuses the same iframe and the script doesn't run again."""
-    components.html(f"""<div style="display:none">{escape(token)}</div><script>(function(){{
+    run_script(f"""<div style="display:none">{escape(token)}</div><script>(function(){{
       try{{const d=window.parent.document;
       const go=()=>{{const e=d.getElementById({anchor!r});
                      if(e){{e.scrollIntoView({{block:'start', behavior:'instant'}});}}}};
-      go(); setTimeout(go,150); setTimeout(go,500);}}catch(e){{}}}})();</script>""", height=0)
+      go(); setTimeout(go,150); setTimeout(go,500);}}catch(e){{}}}})();</script>""")
 
 
 def header(key: str) -> None:
@@ -639,7 +692,8 @@ def restore_panel() -> None:
         c1, c2 = st.columns(2)
         if wb:
             c1.download_button("⬇ Download my saved workbook", wb,
-                               file_name=saved["last_wb"]["name"], width="stretch")
+                               file_name=saved["last_wb"]["name"], width="stretch",
+                               on_click="ignore")
         if c2.button("Start fresh (replaces the saved work)", width="stretch"):
             SS["restore"] = {"sid": r["sid"], "status": "fresh"}
             save_state("fresh")
@@ -704,7 +758,7 @@ def page_start() -> None:
     m[1].metric("Peak month", scn.months[scn.demand.index(max(scn.demand))])
     m[2].metric("Peak demand", f"{max(scn.demand):,.0f}")
     m[3].metric("Lowest demand", f"{min(scn.demand):,.0f}")
-    st.altair_chart(demand_chart(scn), use_container_width=True)
+    st.altair_chart(demand_chart(scn), width="stretch")
     st.subheader("Your company's planning policies")
     st.caption("Every plan must follow these; they are also on the Scenario sheet of your "
                "workbook. " + ("Change them under **Settings** in the sidebar before you "
@@ -733,11 +787,12 @@ def page_start() -> None:
                               for i, k in enumerate(PIECES, start=1)))
         st.markdown("On each plan sheet only **Month** and **Demand** are given. You decide "
                     "which columns the plan needs, name them, and write the formulas.")
-        with st.expander("Excel tips"):
-            for t, d in text.excel_tips(formulas_checked()):
-                st.markdown(f"**{t}.** {text.md(d)}")
-            st.markdown("**Names for the given data:** "
-                        + ", ".join(f"`{n}`" for n, _, _, _ in scn.name_keys()))
+        with lazy_expander("Excel tips", "lx_excel_tips") as show:
+            if show:
+                for t, d in text.excel_tips(formulas_checked()):
+                    st.markdown(f"**{t}.** {text.md(d)}")
+                st.markdown("**Names for the given data:** "
+                            + ", ".join(f"`{n}`" for n, _, _, _ in scn.name_keys()))
     nav_buttons("start", "Start the chase plan →")
 
 
@@ -780,20 +835,36 @@ def hint_block(kind: str, item: str, level: int) -> str:
 
 
 def grid_html(res: checker.PieceResult) -> str:
-    g = checker.grid(res)
-    if g.empty:
+    """The cell-by-cell table. A check result never changes once made, so its HTML is built
+    once and kept on the result (every later click on the step reuses it)."""
+    cached = res.__dict__.get("_grid_html")
+    if cached is None:
+        cached = res.__dict__["_grid_html"] = _grid_html(res)
+    return cached
+
+
+def _grid_html(res: checker.PieceResult) -> str:
+    rows: Dict[str, Dict[str, object]] = {}
+    cols: List[str] = []
+    for c in res.cells:                        # the same layout as checker.grid, minus pandas
+        if c.row_label == "Planning" or c.sheet == L.SHEET_SUMMARY:
+            continue
+        rows.setdefault(c.row_label, {})[c.col_label] = c
+        if c.col_label not in cols:
+            cols.append(c.col_label)
+    if not rows:
         return ""
     def _th(c):
         letter, _, heading = c.partition(" · ")
         return (f"<th title='{escape(c)}'><span class='ltr'>{escape(letter)}</span>"
                 f"<span class='hd'>{escape(heading)}</span></th>")
-    head = "".join(_th(c) for c in g.columns)
+    head = "".join(_th(c) for c in cols)
     body = []
-    for row in g.index:
+    for row, cells in rows.items():
         tds = []
-        for col in g.columns:
-            c = g.at[row, col]
-            if not hasattr(c, "status"):            # empty grid position
+        for col in cols:
+            c = cells.get(col)
+            if c is None:                           # empty grid position
                 tds.append("<td></td>")
                 continue
             tip = escape(f"{c.ref}: {checker.STATUS_LABEL[c.status]}"
@@ -803,7 +874,7 @@ def grid_html(res: checker.PieceResult) -> str:
             tds.append(f"<td title=\"{tip}\" style=\"background:{COLORS[c.status]}\">"
                        f"{SYMBOL[c.status]}{mark}</td>")
         body.append(f"<tr><th>{escape(row)}</th>{''.join(tds)}</tr>")
-    narrow = " narrow" if len(g.columns) > 12 else ""
+    narrow = " narrow" if len(cols) > 12 else ""
     return (f"<div class='aa-grid{narrow}'><table><thead><tr><th></th>{head}</tr></thead>"
             f"<tbody>{''.join(body)}</tbody></table></div>")
 
@@ -1027,7 +1098,7 @@ def guided_hybrid(scn, ps: dict) -> bool:
              "replaced; other sheets are untouched.")
     seed = st.file_uploader("Workbook to add the starting plan to (.xlsx)", type=["xlsx"],
                             key="hyb_seed")
-    upload_copy_help()
+    upload_copy_help("_1")
     if seed is not None:
         data = seed.getvalue()
         sig = (hashlib.sha256(data).hexdigest(), start, scn.config_hash)
@@ -1136,7 +1207,9 @@ def workbook_headings() -> Dict[str, List[str]]:
 def heading_why(found: Dict[str, str]) -> None:
     """What the workbook renamed, and why the standard headings are the better choice."""
     changes = columns.heading_changes("chase", found)
-    with st.expander("Why the workbook uses standard headings"):
+    with lazy_expander("Why the workbook uses standard headings", "lx_heading_why") as show:
+        if not show:
+            return
         if changes:
             st.markdown("Your columns are all there, in the recommended order, under the "
                         "standard name for each:")
@@ -1234,12 +1307,13 @@ def design_columns(key: str, scn) -> None:
     found = found_columns(key)                        # ... plus uploads (level: + chase)
     st.write("Turn each question below into a column heading and **check it here, one at a "
              "time** — a good one is ticked off and tells you why that column matters.")
-    with st.expander("About this step"):
-        st.info(text.md(columns.whats_new(key)))
-        st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet only Month and Demand are given. "
-                 "Each question becomes one column: a heading in row 1 (from column C on), "
-                 "formulas for January–December, totals in row 14. Any order and any clear "
-                 "wording work.")
+    with lazy_expander("About this step", f"lx_about_{key}") as show:
+        if show:
+            st.info(text.md(columns.whats_new(key)))
+            st.write(f"On the **{L.PLAN_SHEETS[key]}** sheet only Month and Demand are given. "
+                     "Each question becomes one column: a heading in row 1 (from column C "
+                     "on), formulas for January–December, totals in row 14. Any order and any "
+                     "clear wording work.")
     progress = st.empty()                    # filled in after this run's check (below)
 
     st.markdown(f"<div id='aa-headcheck-{key}'></div>", unsafe_allow_html=True)
@@ -1293,11 +1367,12 @@ def design_columns(key: str, scn) -> None:
             st.markdown("**Next:** open **② Get your workbook** below.")
     # newest first: the latest check is above; then how they connect, what is still open,
     # and the earlier finds (most recent first) at the bottom
-    with st.expander("How they connect"):
-        st.graphviz_chart(columns.diagram(key, found), width="stretch")
-        st.caption("Read it top to bottom, the way a month happens. An arrow into a box means "
-                   "that column uses the value. A **?** is a column you haven't found yet — the "
-                   "picture fills in as you go.")
+    with lazy_expander("How they connect", f"lx_connect_{key}") as show:
+        if show:
+            st.graphviz_chart(columns.diagram(key, found), width="stretch")
+            st.caption("Read it top to bottom, the way a month happens. An arrow into a box "
+                       "means that column uses the value. A **?** is a column you haven't "
+                       "found yet — the picture fills in as you go.")
     oq = columns.open_questions(key, found)
     if oq:
         st.markdown("**Still to find** — one column for each question:")
@@ -1307,8 +1382,9 @@ def design_columns(key: str, scn) -> None:
     if found:
         info = {c.concept: c for _, _, cols in columns.stages(key, scn.whole_workers)
                 for c in cols}
-        with st.expander(f"Found so far ({len(found)}) — newest first"):
-            for concept in reversed(list(found)):      # found in the order they were found
+        with lazy_expander(f"Found so far ({len(found)}) — newest first",
+                           f"lx_found_{key}") as show:
+            for concept in (reversed(list(found)) if show else ()):   # in the order found
                 c = info[concept]
                 st.markdown(text.md(f"✔ **{c.heading}** — your heading "
                                     f"“{escape(found[concept])}”"))
@@ -1469,9 +1545,14 @@ def show_guidance(key: str, scn, stages) -> list:
                     "plans only. If your Summary sheet has a Hybrid column, leave it empty — it "
                     "isn't checked — and recommend **Chase** or **Level**.")
     else:
-        with st.expander(f"{stage_num(stages, 'columns')} Find your columns",
-                         expanded=cur == "columns"):
-            design_columns(key, scn)
+        label = f"{stage_num(stages, 'columns')} Find your columns"
+        if cur == "columns":                    # the stage the student is on: always drawn
+            with st.expander(label, expanded=True):
+                design_columns(key, scn)
+        else:                                   # done: its ~50 elements only while open
+            with lazy_expander(label, f"lx_columns_{key}") as show:
+                if show:
+                    design_columns(key, scn)
         stages = piece_stages(key)               # the check above may have found the last one
         if any(s == "workbook" for s, _, _ in stages):
             if key == "chase":
@@ -1487,17 +1568,20 @@ def show_guidance(key: str, scn, stages) -> list:
                         st.rerun()
         build_section(key, scn, stages)
     if key != "summary":
-        with st.expander("Your company's policies: safety stock, backorders, workers"):
-            show_policies(scn)
+        with lazy_expander("Your company's policies: safety stock, backorders, workers",
+                           f"lx_policies_{key}") as show:
+            if show:
+                show_policies(scn)
     if key == "hybrid":
         hybrid_start_guide(scn, expanded=not ps["attempts"])
     if ps["help"] or ps["colhelp"]:
-        with st.expander(f"Your hints so far ({len(ps['help']) + len(ps['colhelp'])})"):
+        with lazy_expander(f"Your hints so far ({len(ps['help']) + len(ps['colhelp'])})",
+                           f"lx_hints_{key}") as show:
             res = SS["results"].get(key) or checker.PieceResult(key, "")
-            for item, lvl in ps["help"].items():
+            for item, lvl in (ps["help"].items() if show else ()):
                 st.markdown(f"**{escape(item_name(key, item, res))}**")
                 st.markdown(hint_block(key, item, lvl), unsafe_allow_html=True)
-            for concept, lvl in ps["colhelp"].items():
+            for concept, lvl in (ps["colhelp"].items() if show else ()):
                 st.markdown(f"- {escape(hints.column_hint(key, concept, lvl))}")
     return stages
 
@@ -1614,7 +1698,7 @@ def page_piece(key: str) -> None:
         pdf, rid = receipts[key]["pdf"], receipts[key]["rid"]
         st.download_button("⬇ Download receipt (PDF)", pdf,
                            file_name=_report().report_file_name(SS["student"]["name"], key, rid),
-                           mime="application/pdf")
+                           mime="application/pdf", on_click="ignore")
         st.caption("Upload the receipt to your LMS if your instructor collects each piece.")
         nav_buttons(key)
         return
@@ -1645,7 +1729,7 @@ def page_piece(key: str) -> None:
              f"**{checker.PIECE_TITLES[key].lower()}** is checked at this step.")
     st.caption(text.md(text.checking_sentence(formulas_checked())))
     up = st.file_uploader("Your workbook (.xlsx)", type=["xlsx"], key=f"up_{key}")
-    upload_copy_help()
+    upload_copy_help("_2")
     if up is not None:
         run_check(key, up)
     res = SS["results"].get(key)
@@ -1691,9 +1775,9 @@ def page_piece(key: str) -> None:
         st.markdown("**Cell by cell** — every column you built, laid out like your sheet; hover "
                     "a cell for details")
         legend()
-        g = checker.grid(res)
-        if not g.empty:
-            st.markdown(grid_html(res), unsafe_allow_html=True)
+        html = grid_html(res)
+        if html:
+            st.markdown(html, unsafe_allow_html=True)
         plan = [c for c in res.cells if c.row_label == "Planning"]
         st.markdown("Planning cells: " + " · ".join(
             f"{c.ref} {SYMBOL[c.status]} {escape(c.label)}" for c in plan))
@@ -1777,7 +1861,7 @@ def page_report() -> None:
         st.download_button("⬇ Download report PDF", fp["pdf"],
                            file_name=_report().report_file_name(stu["name"], "final" if final
                                                              else "draft", fp["rid"]),
-                           mime="application/pdf", type="primary")
+                           mime="application/pdf", type="primary", on_click="ignore")
         if fp.get("recorded") is True:
             st.caption(f"Completion recorded (report {fp['rid']}).")
         elif fp.get("recorded"):

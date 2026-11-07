@@ -2,3 +2,5 @@
 pytest>=7
 # tools/load_test.py samples the server's CPU and memory
 psutil>=5
+# tools/load_test.py talks to the server as a browser does (Streamlit >=1.57 no longer installs it)
+tornado>=6

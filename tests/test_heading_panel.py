@@ -66,11 +66,14 @@ def test_newest_find_first_and_diagram_above_the_lists():
     at = chase_page()
     for h in ("Starting Stock", "Crew", "Hired"):
         at = check(at, h)
+    found_box = next(e for e in at.expander if e.label.startswith("Found so far (3)"))
+    assert not found_box.proto.expanded                       # closed until opened ...
+    assert not [m for m in at.markdown if m.value.startswith("✔ **")]   # ... and not drawn
+    at.session_state["lx_found_chase"] = True                 # the student opens it
+    at = at.run()
     found = [m.value for m in at.markdown if m.value.startswith("✔ **")]
     assert [f.split("**")[1] for f in found] == ["Hires", "Workers", "Beginning Inventory"]
     assert any("Still to find" in m.value for m in at.markdown)
-    found_box = next(e for e in at.expander if e.label.startswith("Found so far (3)"))
-    assert not found_box.proto.expanded                       # closed until opened
     labels = [e.label for e in at.expander]
     assert "How they connect" in labels and "About this step" in labels
     assert not next(e for e in at.expander if e.label == "About this step").proto.expanded
@@ -125,6 +128,8 @@ def test_workbook_is_offered_with_the_headings_once_every_chase_column_is_found(
         row1 = [wb[sheet].cell(1, j).value for j in range(3, 17)]
         assert row1[0] == "Beginning Inventory" and row1[-1] == "Total Cost", (sheet, row1)
         assert row1[3] == "Workers" and row1[8] == "Labor Cost"
+    at.session_state["lx_heading_why"] = True                 # opened by the student
+    at = at.run()
     why = next(e for e in at.expander if e.label == "Why the workbook uses standard headings")
     body = " ".join(m.value for m in why.markdown)
     assert "standard terms" in body and "| Starting Stock | Beginning Inventory |" in body
@@ -140,6 +145,10 @@ def test_level_panel_starts_with_the_chase_columns_found():
     at.session_state["step"] = "level"
     at = at.run()
     assert not at.exception
+    assert "✔ Find your columns" in next(m.value for m in at.markdown
+                                         if "<div class='aa-stages'>" in m.value)
+    at.session_state["lx_columns_level"] = True               # open the finished stage
+    at = at.run()
     assert "14 of 14 columns found" in str(at.get("progress")[0].proto)
     assert not any("with the headings" in d for d in download_labels(at))   # chase only
 

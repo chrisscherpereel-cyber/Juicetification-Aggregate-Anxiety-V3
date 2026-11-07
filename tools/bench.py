@@ -234,36 +234,13 @@ def burst(n=30):
 
 
 def sessions(n=30, clicks=12):
-    section(f"7. {n} live app sessions clicking at once (real script runner, one process)")
-    from streamlit.testing.v1 import AppTest
-
-    def student(i):
-        at = AppTest.from_string(_TIMED_APP, default_timeout=120).run()
-        at.text_input[0].input(f"Student {i}")
-        at.text_input[1].input(f"S{i}")
-        next(b for b in at.button if b.label == "Start").click()
-        at = at.run()
-        lat, cpu = [], []
-        steps = ["chase", "start", "chase", "report"]
-        for k in range(clicks):
-            at.session_state["step"] = steps[k % len(steps)]
-            t = time.perf_counter()
-            at.run()
-            lat.append(time.perf_counter() - t)
-            cpu.append(at.session_state["_bench_ms"])
-        return lat, cpu
-
-    t = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=n) as ex:
-        res = list(ex.map(student, range(n)))
-    wall = time.perf_counter() - t
-    lat = sorted(x for r in res for x in r[0])
-    cpu = [x for r in res for x in r[1]]
-    p95 = lat[int(len(lat) * .95)]
-    print(f"{n} sessions x {clicks} clicks in {wall:.1f} s; click CPU {statistics.mean(cpu):.1f} ms; "
-          f"click latency median {statistics.median(lat) * 1000:.0f} ms, p95 {p95 * 1000:.0f} ms "
-          "(includes the test harness)")
-    return lat
+    """Retired. Running many AppTest sessions on a thread pool stopped working with newer
+    Streamlit (AppTest is not thread-safe: sessions trip over each other's widget state and
+    the 'Runtime hasn't been created' error), so it measured nothing. The real-server load
+    test covers the same question better, with real websockets and real uploads."""
+    section(f"7. {n} live app sessions clicking at once")
+    print("moved to the real-server test: python tools/load_test.py --students 30 "
+          "[--upload-every 3]")
 
 
 if __name__ == "__main__":
