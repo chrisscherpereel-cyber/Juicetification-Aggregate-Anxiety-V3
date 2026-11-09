@@ -30,6 +30,7 @@ from openpyxl.utils import get_column_letter
 import streamlit as st
 
 import student_store as store
+from login_gate import require_login
 from juice_director import resolve_config, serve_manifest_if_requested
 from manifest import MANIFEST
 
@@ -110,6 +111,11 @@ if identity.mode == "blocked":
         SS["practice"] = True
         st.rerun()
     st.stop()
+
+# Shared sign-in screen (login_gate.py), the same one every Juicetification game uses. Only when
+# saving is on and the link carries no ID; signed assignment links and practice mode skip it.
+if not PRACTICE and not URL_SID:
+    URL_SID = require_login("Aggregate Anxiety", "🧃")
 
 INCLUDE_HYBRID = bool(resolve_scenario(CFG, 1).params.get("include_hybrid", True))
 ALL_PIECES = ["chase", "level", "hybrid", "summary"]
@@ -708,7 +714,7 @@ def restore_panel() -> None:
             if err:
                 st.error(err)
             elif (URL_SID and sid != URL_SID) or (SS["student"] and sid != SS["student"]["sid"]):
-                st.error(f"This progress file belongs to student ID '{sid}', not yours.")
+                st.error(f"This progress file belongs to ID '{sid}', not yours.")
             elif SS.get("_progress_loaded") != up.file_id:
                 SS["_progress_loaded"] = up.file_id
                 if apply_saved(state, sid, "file") == "incompatible":
@@ -728,15 +734,15 @@ def page_start() -> None:
     if not SS["student"]:
         st.write("You are the operations planner at **Juicetification Inc.**, a juice bottler "
                  "with a strong summer peak. You'll plan a year of production in Excel — "
-                 "designing the worksheet yourself. Your student ID gives you your own scenario.")
+                 "designing the worksheet yourself. Your ID gives you your own scenario.")
         with st.form("who"):
             name = st.text_input("Your name")
-            sid = st.text_input("Student ID", value=URL_SID or "", disabled=bool(URL_SID),
+            sid = st.text_input("Your ID", value=URL_SID or "", disabled=bool(URL_SID),
                                 help="Your scenario is made from this ID: use the same ID every time.")
             if st.form_submit_button("Start", type="primary"):
                 sid = (URL_SID or sid).strip()
                 if not name.strip() or not sid:
-                    st.error("Enter your name and your student ID.")
+                    st.error("Enter your name and your ID.")
                 else:
                     SS["student"] = {"name": name.strip(), "sid": sid}
                     if not URL_SID and not PRACTICE:
